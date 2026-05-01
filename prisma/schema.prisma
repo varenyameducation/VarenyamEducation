@@ -1,0 +1,228 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  supabase_uid String    @unique @db.Uuid
+  email        String    @unique
+  full_name    String
+  role         String    // 'super_admin' | 'admin' | 'teacher'
+  subject      String[]
+  avatar_url   String?
+  is_active    Boolean   @default(true)
+  last_login   DateTime? @db.Timestamptz
+  created_at   DateTime  @default(now()) @db.Timestamptz
+  updated_at   DateTime  @updatedAt @db.Timestamptz
+
+  courses          Course[]
+  chapters         Chapter[]
+  topics           Topic[]
+  questions        Question[]
+  tests            Test[]
+  audit_logs       AuditLog[]
+  branding_updates InstituteBranding[]
+
+  @@map("users")
+}
+
+model Course {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String
+  grade       Int       @db.SmallInt
+  stream      String?   // 'JEE' | 'NEET' | 'School' | 'Board'
+  description String?
+  is_active   Boolean   @default(true)
+  created_by  String?   @db.Uuid
+  created_at  DateTime  @default(now()) @db.Timestamptz
+  updated_at  DateTime  @updatedAt @db.Timestamptz
+  deleted_at  DateTime? @db.Timestamptz
+
+  creator   User?     @relation(fields: [created_by], references: [id])
+  chapters  Chapter[]
+  questions Question[]
+  tests     Test[]
+
+  @@map("courses")
+}
+
+model Chapter {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  course_id  String    @db.Uuid
+  name       String
+  subject    String    // 'Physics' | 'Chemistry' | 'Maths' | 'Biology'
+  chapter_no Int?      @db.SmallInt
+  is_active  Boolean   @default(true)
+  created_by String?   @db.Uuid
+  created_at DateTime  @default(now()) @db.Timestamptz
+  updated_at DateTime  @updatedAt @db.Timestamptz
+  deleted_at DateTime? @db.Timestamptz
+
+  course    Course     @relation(fields: [course_id], references: [id], onDelete: Cascade)
+  creator   User?      @relation(fields: [created_by], references: [id])
+  topics    Topic[]
+  questions Question[]
+
+  @@index([course_id], name: "idx_chapters_course")
+  @@map("chapters")
+}
+
+model Topic {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  chapter_id String    @db.Uuid
+  name       String
+  topic_no   Int?      @db.SmallInt
+  is_active  Boolean   @default(true)
+  created_by String?   @db.Uuid
+  created_at DateTime  @default(now()) @db.Timestamptz
+  updated_at DateTime  @updatedAt @db.Timestamptz
+  deleted_at DateTime? @db.Timestamptz
+
+  chapter   Chapter    @relation(fields: [chapter_id], references: [id], onDelete: Cascade)
+  creator   User?      @relation(fields: [created_by], references: [id])
+  questions Question[]
+
+  @@index([chapter_id], name: "idx_topics_chapter")
+  @@map("topics")
+}
+
+model Question {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  course_id        String?   @db.Uuid
+  chapter_id       String?   @db.Uuid
+  topic_id         String?   @db.Uuid
+  subject          String
+  question_type    String    // 'mcq' | 'numerical' | 'matrix_match' | 'multi_select'
+  difficulty       String    // 'easy' | 'medium' | 'hard' | 'advanced'
+  exam_type        String    // 'school' | 'board' | 'jee' | 'neet'
+  marks_correct    Decimal   @default(4) @db.Decimal(5, 2)
+  marks_negative   Decimal   @default(0) @db.Decimal(5, 2)
+  marks_partial    Decimal?  @db.Decimal(5, 2)
+  question_body    String
+  option_a         String?
+  option_b         String?
+  option_c         String?
+  option_d         String?
+  correct_option   String[]
+  numerical_answer Decimal?  @db.Decimal(10, 4)
+  matrix_left      Json?
+  matrix_right     Json?
+  matrix_answer    Json?
+  solution         String?
+  explanation      String?
+  hint             String?
+  image_urls       String[]
+  created_by       String?   @db.Uuid
+  is_verified      Boolean   @default(false)
+  times_used       Int       @default(0)
+  tags             String[]
+  created_at       DateTime  @default(now()) @db.Timestamptz
+  updated_at       DateTime  @updatedAt @db.Timestamptz
+  deleted_at       DateTime? @db.Timestamptz
+
+  course         Course?        @relation(fields: [course_id], references: [id])
+  chapter        Chapter?       @relation(fields: [chapter_id], references: [id])
+  topic          Topic?         @relation(fields: [topic_id], references: [id])
+  creator        User?          @relation(fields: [created_by], references: [id])
+  test_questions TestQuestion[]
+
+  @@index([topic_id], name: "idx_q_topic")
+  @@index([chapter_id], name: "idx_q_chapter")
+  @@index([course_id], name: "idx_q_course")
+  @@index([subject], name: "idx_q_subject")
+  @@index([question_type], name: "idx_q_type")
+  @@index([difficulty], name: "idx_q_difficulty")
+  @@index([exam_type], name: "idx_q_exam_type")
+  @@map("questions")
+}
+
+model Test {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title            String
+  description      String?
+  course_id        String?   @db.Uuid
+  subject          String?
+  exam_type        String?   // 'school' | 'board' | 'jee' | 'neet' | 'custom'
+  duration_minutes Int       @default(180)
+  instructions     String?
+  status           String    @default("draft") // 'draft' | 'final' | 'published' | 'archived'
+  scheduled_start  DateTime? @db.Timestamptz
+  scheduled_end    DateTime? @db.Timestamptz
+  assigned_batch   String?   @db.Uuid
+  allow_resume     Boolean   @default(true)
+  shuffle_questions Boolean  @default(false)
+  created_by       String?   @db.Uuid
+  created_at       DateTime  @default(now()) @db.Timestamptz
+  updated_at       DateTime  @updatedAt @db.Timestamptz
+  deleted_at       DateTime? @db.Timestamptz
+
+  course         Course?        @relation(fields: [course_id], references: [id])
+  creator        User?          @relation(fields: [created_by], references: [id])
+  test_questions TestQuestion[]
+
+  @@map("tests")
+}
+
+model TestQuestion {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  test_id           String   @db.Uuid
+  question_id       String   @db.Uuid
+  position          Int      @db.SmallInt
+  section_label     String?
+  marks_override    Decimal? @db.Decimal(5, 2)
+  negative_override Decimal? @db.Decimal(5, 2)
+
+  test     Test     @relation(fields: [test_id], references: [id], onDelete: Cascade)
+  question Question @relation(fields: [question_id], references: [id])
+
+  @@unique([test_id, position])
+  @@index([test_id], name: "idx_tq_test_id")
+  @@map("test_questions")
+}
+
+model InstituteBranding {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  inst_name       String   @default("Varenyam Coaching Institute")
+  tagline         String?
+  address         String?
+  phone           String?
+  email           String?
+  website         String?
+  logo_url        String?
+  brand_color_hex String   @default("1B3A6B")
+  logo_position   String   @default("left") // 'left' | 'center' | 'right'
+  paper_font      String   @default("formal")
+  footer_text     String   @default("Confidential — For Student Use Only")
+  show_address    Boolean  @default(true)
+  show_phone      Boolean  @default(true)
+  show_website    Boolean  @default(false)
+  updated_by      String?  @db.Uuid
+  updated_at      DateTime @updatedAt @db.Timestamptz
+
+  updater User? @relation(fields: [updated_by], references: [id])
+
+  @@map("institute_branding")
+}
+
+model AuditLog {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id     String?  @db.Uuid
+  action      String
+  entity_type String?
+  entity_id   String?  @db.Uuid
+  meta        Json?
+  ip_address  String?
+  created_at  DateTime @default(now()) @db.Timestamptz
+
+  user User? @relation(fields: [user_id], references: [id])
+
+  @@index([user_id], name: "idx_audit_user")
+  @@index([action], name: "idx_audit_action")
+  @@map("audit_log")
+}
