@@ -4,8 +4,44 @@ import { prisma } from '@/lib/db/prisma'
 import { ok } from '@/lib/api/response'
 import { isAuthFailure, isParseFailure, parseJsonBody, requireAuth } from '@/lib/api/taxonomy'
 import { logAudit } from '@/lib/auth/audit'
-import { getClientIp } from '@/lib/api/questions'
-import { createTestSchema } from '@/lib/api/tests'
+import { getClientIp, paginatedEnvelope } from '@/lib/api/questions'
+import { createTestSchema, listTestsQuerySchema } from '@/lib/api/tests'
+
+export async function GET(request: NextRequest) {
+  const auth = await requireAuth()
+  if (isAuthFailure(auth)) return auth.response
+
+  const url = new URL(request.url)
+  const parsed = listTestsQuerySchema.safeParse({
+    status: url.searchParams.get('status') ?? undefined,
+    page: url.searchParams.get('page') ?? undefined,
+    limit: url.searchParams.get('limit') ?? undefined,
+  })
+  if (!parsed.success) {
+    return ok(paginatedEnvelope({ items: [], page: 1, limit: 20, total: 0 }))
+  }
+
+  const { page, limit, status } = parsed.data
+  const isAdmin = auth.payload.role === 'admin' || auth.payload.role === 'super_admin'
+
+  const where: Prisma.TestWhereInput = {
+    deleted_at: null,
+    ...(isAdmin ? {} : { created_by: auth.user.id }),
+    ...(status ? { status } : {}),
+  }
+
+  const [total, items] = await prisma.$transaction([
+    prisma.test.count({ where }),
+    prisma.test.findMany({
+      where,
+      orderBy: { created_at: 'desc' },
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+  ])
+
+  return ok(paginatedEnvelope({ items, page, limit, total }))
+}
 
 export async function POST(request: NextRequest) {
   const auth = await requireAuth()
