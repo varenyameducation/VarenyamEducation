@@ -17,9 +17,13 @@ build/
 # ────────────────────────────────────────────────────────────
 .env
 .env.local
+.env.development
 .env.development.local
+.env.test
 .env.test.local
+.env.production
 .env.production.local
+*.pem
 # Allow the example file so new devs know what's needed
 !.env.example
 
@@ -27,6 +31,13 @@ build/
 # Prisma generated client (regenerated via `prisma generate`)
 # ────────────────────────────────────────────────────────────
 prisma/generated/
+prisma/migrations/dev.db*
+
+# ────────────────────────────────────────────────────────────
+# Supabase local dev
+# ────────────────────────────────────────────────────────────
+/supabase/.branches
+/supabase/.temp
 
 # ────────────────────────────────────────────────────────────
 # Vercel
@@ -67,6 +78,7 @@ Desktop.ini
 *.sw?
 .idea/
 *.iml
+.vscode/
 
 # ────────────────────────────────────────────────────────────
 # Claude Code (local-only settings; project settings.json IS tracked)
