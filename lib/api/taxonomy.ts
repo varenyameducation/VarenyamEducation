@@ -1,0 +1,79 @@
+import type { NextResponse } from 'next/server'
+import type { z } from 'zod'
+import type { User } from '@prisma/client'
+import { prisma } from '@/lib/db/prisma'
+import { getSessionFromCookies } from '@/lib/auth/session'
+import type { JWTPayload } from '@/lib/auth/jwt'
+import { err } from '@/lib/api/response'
+
+export type Role = 'super_admin' | 'admin' | 'teacher'
+
+export type AuthSuccess = { user: User; payload: JWTPayload }
+export type AuthFailure = { response: NextResponse }
+export type AuthResult = AuthSuccess | AuthFailure
+
+export function isAuthFailure(result: AuthResult): result is AuthFailure {
+  return 'response' in result
+}
+
+export async function requireAuth(allowedRoles?: Role[]): Promise<AuthResult> {
+  const payload = getSessionFromCookies()
+  if (!payload) {
+    return { response: err(401, { code: 'UNAUTHENTICATED', message: 'Login required' }) }
+  }
+
+  if (allowedRoles && !allowedRoles.includes(payload.role)) {
+    return {
+      response: err(403, {
+        code: 'FORBIDDEN',
+        message: 'You do not have permission to perform this action',
+      }),
+    }
+  }
+
+  const user = await prisma.user.findUnique({ where: { supabase_uid: payload.sub } })
+  if (!user || !user.is_active) {
+    return {
+      response: err(401, { code: 'UNAUTHENTICATED', message: 'User no longer active' }),
+    }
+  }
+
+  return { user, payload }
+}
+
+export type ParseSuccess<T> = { data: T; response?: never }
+export type ParseFailure = { data?: never; response: NextResponse }
+export type ParseResult<T> = ParseSuccess<T> | ParseFailure
+
+export function isParseFailure<T>(result: ParseResult<T>): result is ParseFailure {
+  return 'response' in result && result.response !== undefined
+}
+
+export async function parseJsonBody<T>(
+  request: Request,
+  schema: z.ZodType<T>,
+): Promise<ParseResult<T>> {
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch {
+    return {
+      response: err(400, { code: 'INVALID_BODY', message: 'Request body must be valid JSON' }),
+    }
+  }
+  const parsed = schema.safeParse(body)
+  if (!parsed.success) {
+    return {
+      response: err(400, {
+        code: 'VALIDATION_ERROR',
+        message: 'Invalid input',
+        details: parsed.error.flatten(),
+      }),
+    }
+  }
+  return { data: parsed.data }
+}
+
+export function listEnvelope<T>(items: T[]) {
+  return { items, page: 1, limit: items.length, total: items.length }
+}
