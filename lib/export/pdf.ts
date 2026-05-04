@@ -1,5 +1,8 @@
-import { renderToStaticMarkup } from 'react-dom/server'
-import puppeteer from 'puppeteer'
+// Note: react-dom/server and puppeteer are dynamically imported inside
+// generateTestPDF below — Next.js App Router rejects top-level imports of
+// react-dom/server in server modules ("You're importing a component that
+// imports react-dom/server"). Dynamic import sidesteps the build-time check
+// without changing runtime behaviour.
 import * as React from 'react'
 import { getInstituteBranding, getTestWithQuestions, resolveLogoSignedUrl, type Branding } from './branding'
 import { TestPaperDocument } from './TestPaperDocument'
@@ -39,6 +42,9 @@ export async function generateTestPDF(testId: string): Promise<Buffer> {
   const branding = await getInstituteBranding()
   const signedLogo = await resolveLogoSignedUrl(branding.logo_url)
   const brandingWithLogo: Branding = { ...branding, logo_url: signedLogo }
+
+  const { renderToStaticMarkup } = await import('react-dom/server')
+  const puppeteer = (await import('puppeteer')).default
 
   const html =
     '<!doctype html>' +
