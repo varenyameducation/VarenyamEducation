@@ -1,0 +1,54 @@
+{
+  "id": "00000000-0000-0000-0000-0000000000aa",
+  "title": "JEE Main Mock — Mechanics Set 1",
+  "description": "Sample fixture used by lib/export/* manual smoke runs.",
+  "course_id": "00000000-0000-0000-0000-0000000000c1",
+  "subject": "Physics",
+  "exam_type": "jee",
+  "duration_minutes": 180,
+  "instructions": "All questions carry +4 marks. Each incorrect MCQ answer attracts −1.",
+  "status": "final",
+  "test_questions": [
+    {
+      "id": "00000000-0000-0000-0000-0000000000t1",
+      "position": 1,
+      "section_label": "Section A — MCQ",
+      "marks_override": null,
+      "negative_override": null,
+      "question": {
+        "id": "00000000-0000-0000-0000-0000000000q1",
+        "subject": "Physics",
+        "question_type": "mcq",
+        "difficulty": "medium",
+        "exam_type": "jee",
+        "marks_correct": "4",
+        "marks_negative": "1",
+        "question_body": "A particle moves under $\\vec{F} = -k\\vec{r}$. The motion is",
+        "option_a": "uniform",
+        "option_b": "circular",
+        "option_c": "simple harmonic",
+        "option_d": "parabolic",
+        "correct_option": ["c"]
+      }
+    },
+    {
+      "id": "00000000-0000-0000-0000-0000000000t2",
+      "position": 2,
+      "section_label": "Section A — MCQ",
+      "marks_override": null,
+      "negative_override": null,
+      "question": {
+        "id": "00000000-0000-0000-0000-0000000000q2",
+        "subject": "Physics",
+        "question_type": "numerical",
+        "difficulty": "hard",
+        "exam_type": "jee",
+        "marks_correct": "4",
+        "marks_negative": "0",
+        "question_body": "Compute $\\int_0^{\\pi/2} \\sin^2(x)\\,dx$ to two decimals.",
+        "correct_option": [],
+        "numerical_answer": "0.79"
+      }
+    }
+  ]
+}

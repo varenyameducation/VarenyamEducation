@@ -80,18 +80,28 @@ export async function getTestWithQuestions(testId: string) {
 
 const SIGNED_URL_TTL_SECONDS = 60 * 10
 
-// Resolves a logo URL to a signed Supabase URL when the row stores a storage
-// path like "branding/logo.png"; pass-through for absolute http(s) URLs.
+// Resolves the stored logo reference to a URL Puppeteer / DOCX can fetch.
+// Accepts three forms:
+//   1. Absolute http(s) URL → returned unchanged.
+//   2. "storage://bucket/path/to.png" → signed via Supabase storage.
+//   3. "bucket/path/to.png" → signed via Supabase storage.
+// Returns null if no logo is set or signing fails (the renderer treats
+// null as "no logo block").
 export async function resolveLogoSignedUrl(logoUrl: string | null): Promise<string | null> {
   if (!logoUrl) return null
   if (/^https?:\/\//i.test(logoUrl)) return logoUrl
 
-  const supabase = createSupabaseServerClient()
-  const [bucket, ...rest] = logoUrl.split('/')
+  const stripped = logoUrl.replace(/^storage:\/\//i, '')
+  const [bucket, ...rest] = stripped.split('/')
   if (!bucket || rest.length === 0) return null
   const path = rest.join('/')
 
-  const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, SIGNED_URL_TTL_SECONDS)
-  if (error || !data) return null
-  return data.signedUrl
+  try {
+    const supabase = createSupabaseServerClient()
+    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, SIGNED_URL_TTL_SECONDS)
+    if (error || !data) return null
+    return data.signedUrl
+  } catch {
+    return null
+  }
 }
