@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server'
-import { createSupabaseAnonServerClient } from '@/lib/supabase/server'
+import { createSupabaseRouteHandlerClient } from '@/lib/supabase/server'
 import { prisma } from '@/lib/db/prisma'
 import { setAuthCookies } from '@/lib/auth/session'
 import { logAudit } from '@/lib/auth/audit'
@@ -12,11 +12,14 @@ export async function GET(request: NextRequest) {
     return NextResponse.redirect(new URL('/login?error=oauth_failed', request.url))
   }
 
-  const supabase = createSupabaseAnonServerClient()
+  const supabase = createSupabaseRouteHandlerClient()
   const { data, error } = await supabase.auth.exchangeCodeForSession(code)
 
   if (error || !data.user) {
-    return NextResponse.redirect(new URL('/login?error=oauth_failed', request.url))
+    console.error('[auth/callback] exchangeCodeForSession failed', error)
+    return NextResponse.redirect(
+      new URL(`/login?error=oauth_failed&detail=${encodeURIComponent(error?.message ?? 'no_user')}`, request.url),
+    )
   }
 
   const email = data.user.email
@@ -57,5 +60,6 @@ export async function GET(request: NextRequest) {
     ip_address: request.headers.get('x-forwarded-for'),
   })
 
-  return NextResponse.redirect(new URL('/dashboard', request.url))
+  // Dashboard route group is `app/(dashboard)/page.tsx` — its URL is `/`, not `/dashboard`.
+  return NextResponse.redirect(new URL('/', request.url))
 }

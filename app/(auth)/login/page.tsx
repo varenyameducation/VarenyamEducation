@@ -65,7 +65,8 @@ export default function LoginPage() {
         setServerError(json?.error?.message ?? 'Login failed')
         return
       }
-      router.push('/dashboard')
+      // Dashboard home lives at `/` (route group app/(dashboard)/page.tsx).
+      router.push('/')
       router.refresh()
     } catch {
       setServerError('Network error. Please try again.')
