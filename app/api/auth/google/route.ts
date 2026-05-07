@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server'
-import { createSupabaseAnonServerClient } from '@/lib/supabase/server'
+import { createSupabaseRouteHandlerClient } from '@/lib/supabase/server'
 import { err } from '@/lib/api/response'
 
 export async function GET(request: NextRequest) {
@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
     })
   }
 
-  const supabase = createSupabaseAnonServerClient()
+  const supabase = createSupabaseRouteHandlerClient()
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {

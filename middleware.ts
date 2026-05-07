@@ -20,7 +20,7 @@ export async function middleware(request: NextRequest) {
   if (!payload) return NextResponse.redirect(new URL('/login', request.url))
 
   if (request.nextUrl.pathname.startsWith('/admin') && payload.role !== 'super_admin')
-    return NextResponse.redirect(new URL('/dashboard', request.url))
+    return NextResponse.redirect(new URL('/', request.url))
 
   const headers = new Headers(request.headers)
   headers.set('x-user-id', payload.sub)
