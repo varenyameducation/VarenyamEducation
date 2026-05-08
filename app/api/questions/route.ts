@@ -1,8 +1,10 @@
 import { type NextRequest } from 'next/server'
+import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db/prisma'
 import { ok } from '@/lib/api/response'
-import { isAuthFailure, requireAuth } from '@/lib/api/taxonomy'
-import { listQuerySchema, paginatedEnvelope } from '@/lib/api/questions'
+import { isAuthFailure, isParseFailure, parseJsonBody, requireAuth } from '@/lib/api/taxonomy'
+import { logAudit } from '@/lib/auth/audit'
+import { createQuestionSchema, listQuerySchema, paginatedEnvelope } from '@/lib/api/questions'
 
 export async function GET(request: NextRequest) {
   const auth = await requireAuth()
@@ -49,4 +51,71 @@ export async function GET(request: NextRequest) {
   ])
 
   return ok(paginatedEnvelope({ items, page, limit, total }))
+}
+
+export async function POST(request: NextRequest) {
+  const auth = await requireAuth()
+  if (isAuthFailure(auth)) return auth.response
+
+  const parsed = await parseJsonBody(request, createQuestionSchema)
+  if (isParseFailure(parsed)) return parsed.response
+
+  const input = parsed.data
+
+  const data: Prisma.QuestionUncheckedCreateInput = {
+    course_id: input.course_id ?? null,
+    chapter_id: input.chapter_id ?? null,
+    topic_id: input.topic_id ?? null,
+    subject: input.subject,
+    question_type: input.question_type,
+    difficulty: input.difficulty,
+    exam_type: input.exam_type,
+    question_body: input.question_body,
+    created_by: auth.user.id,
+    correct_option: [],
+    image_urls: input.image_urls ?? [],
+    tags: input.tags ?? [],
+    ...(input.marks_correct !== undefined ? { marks_correct: input.marks_correct } : {}),
+    ...(input.marks_negative !== undefined ? { marks_negative: input.marks_negative } : {}),
+    ...(input.marks_partial !== undefined && input.marks_partial !== null
+      ? { marks_partial: input.marks_partial }
+      : {}),
+    ...(input.solution !== undefined && input.solution !== null ? { solution: input.solution } : {}),
+    ...(input.explanation !== undefined && input.explanation !== null
+      ? { explanation: input.explanation }
+      : {}),
+    ...(input.hint !== undefined && input.hint !== null ? { hint: input.hint } : {}),
+  }
+
+  if (input.question_type === 'mcq' || input.question_type === 'multi_select') {
+    data.option_a = input.option_a
+    data.option_b = input.option_b
+    data.option_c = input.option_c
+    data.option_d = input.option_d
+    data.correct_option = input.correct_option
+  } else if (input.question_type === 'numerical') {
+    data.numerical_answer = input.numerical_answer
+  } else if (input.question_type === 'matrix_match') {
+    data.matrix_left = input.matrix_left as Prisma.InputJsonValue
+    data.matrix_right = input.matrix_right as Prisma.InputJsonValue
+    data.matrix_answer = input.matrix_answer as Prisma.InputJsonValue
+  }
+
+  const question = await prisma.question.create({ data })
+
+  await logAudit({
+    user_id: auth.user.id,
+    action: 'question.create',
+    entity_type: 'question',
+    entity_id: question.id,
+    meta: {
+      question_type: question.question_type,
+      subject: question.subject,
+      difficulty: question.difficulty,
+      exam_type: question.exam_type,
+    },
+    ip_address: request.headers.get('x-forwarded-for'),
+  })
+
+  return ok(question, { status: 201 })
 }
