@@ -17,6 +17,7 @@ import {
 } from '@/components/tests/selected-questions-sorter'
 import { TestPreviewModal } from '@/components/tests/test-preview-modal'
 import { TestSetupModal } from '@/components/tests/test-setup-modal'
+import { TestActionBar } from '@/components/tests/test-action-bar'
 import { apiGet, type Question } from '@/lib/ui/api'
 import type { TestSetupValues, TestStatus } from '@/lib/validation/test'
 import type { SubjectValue, ExamTypeValue } from '@/lib/validation/question'
@@ -244,6 +245,17 @@ export default function TestBuilderEditPage({
           instructions: meta.instructions,
         }}
         selected={selected}
+      />
+
+      <TestActionBar
+        testId={params.id}
+        meta={meta}
+        selected={selected}
+        disabledReason={
+          isLocalDraft
+            ? 'Local draft — saving needs /api/tests to be reachable.'
+            : null
+        }
       />
     </div>
   )

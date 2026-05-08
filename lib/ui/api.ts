@@ -156,6 +156,14 @@ export async function apiPatch<T>(
   return apiPost<T>(path, body, { ...init, method: 'PATCH' })
 }
 
+export async function apiPut<T>(
+  path: string,
+  body: unknown,
+  init?: RequestInit,
+): Promise<ApiResult<T>> {
+  return apiPost<T>(path, body, { ...init, method: 'PUT' })
+}
+
 export async function apiDelete<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
   return apiGet<T>(path, { ...init, method: 'DELETE' })
 }
