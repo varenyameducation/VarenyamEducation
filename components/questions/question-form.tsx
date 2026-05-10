@@ -28,6 +28,7 @@ import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
 import { LaTeXEditor } from '@/components/ui/latex-editor'
 import { Textarea } from '@/components/ui/textarea'
+import { QuestionTypeFields } from '@/components/questions/question-type-fields'
 import { cn } from '@/lib/utils'
 
 export interface QuestionFormProps {
@@ -305,6 +306,9 @@ export function QuestionForm({
             <p className="text-sm text-destructive">{errors.question_body.message}</p>
           )}
         </section>
+
+        {/* Type-specific fields */}
+        <QuestionTypeFields />
 
         {/* Optional fields */}
         <section className="grid gap-4 md:grid-cols-2">
