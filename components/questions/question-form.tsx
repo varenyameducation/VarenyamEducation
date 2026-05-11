@@ -29,6 +29,7 @@ import { Select } from '@/components/ui/select'
 import { LaTeXEditor } from '@/components/ui/latex-editor'
 import { Textarea } from '@/components/ui/textarea'
 import { QuestionTypeFields } from '@/components/questions/question-type-fields'
+import { ImageUploader } from '@/components/questions/image-uploader'
 import { cn } from '@/lib/utils'
 
 export interface QuestionFormProps {
@@ -309,6 +310,18 @@ export function QuestionForm({
 
         {/* Type-specific fields */}
         <QuestionTypeFields />
+
+        {/* Images */}
+        <Controller
+          control={control}
+          name="image_paths"
+          render={({ field }) => (
+            <ImageUploader
+              value={(field.value ?? []) as string[]}
+              onChange={field.onChange}
+            />
+          )}
+        />
 
         {/* Optional fields */}
         <section className="grid gap-4 md:grid-cols-2">
