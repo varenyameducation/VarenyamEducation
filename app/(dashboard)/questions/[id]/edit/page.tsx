@@ -1,45 +1,116 @@
 'use client'
 
+import * as React from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { notFound } from 'next/navigation'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertCircle } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { QuestionForm } from '@/components/questions/question-form'
-import type { QuestionFormValues } from '@/lib/validation/question'
-import { MOCK_QUESTIONS } from '@/lib/ui/mocks/questions'
+import type {
+  DifficultyValue,
+  ExamTypeValue,
+  QuestionFormValues,
+  QuestionTypeValue,
+  SubjectValue,
+} from '@/lib/validation/question'
+import { apiGet, apiPatch, type Question } from '@/lib/ui/api'
+import { normalizeQuestionFormForApi } from '@/lib/ui/normalize-question-form'
+
+function toFormInitialValues(q: Question): Partial<QuestionFormValues> {
+  return {
+    course_id: q.course_id ?? undefined,
+    chapter_id: q.chapter_id ?? undefined,
+    topic_id: q.topic_id ?? undefined,
+    subject: q.subject as SubjectValue,
+    question_type: q.question_type as QuestionTypeValue,
+    difficulty: q.difficulty as DifficultyValue,
+    exam_type: q.exam_type as ExamTypeValue,
+    marks_correct: Number(q.marks_correct),
+    marks_negative: Number(q.marks_negative),
+    question_body: q.question_body,
+    option_a: q.option_a ?? '',
+    option_b: q.option_b ?? '',
+    option_c: q.option_c ?? '',
+    option_d: q.option_d ?? '',
+    correct_option: (q.correct_option ?? []).map(
+      (c) => c.toLowerCase(),
+    ) as QuestionFormValues['correct_option'],
+    numerical_answer:
+      q.numerical_answer != null ? Number(q.numerical_answer) : undefined,
+    solution: q.solution ?? '',
+    explanation: q.explanation ?? '',
+    image_paths: q.image_urls ?? [],
+  }
+}
 
 export default function EditQuestionPage({ params }: { params: { id: string } }) {
   const router = useRouter()
-  // TODO: replace with apiGet<Question>(`/api/questions/${params.id}`).
-  const q = MOCK_QUESTIONS.find((it) => it.id === params.id)
-  if (!q) notFound()
+  const queryClient = useQueryClient()
 
-  const initial: Partial<QuestionFormValues> = {
-    course_id: q.course_id,
-    chapter_id: q.chapter_id,
-    topic_id: q.topic_id,
-    subject: q.subject,
-    question_type: q.question_type,
-    difficulty: q.difficulty,
-    exam_type: q.exam_type,
-    marks_correct: q.marks_correct,
-    marks_negative: q.marks_negative,
-    question_body: q.question_body,
+  const { data, isLoading } = useQuery({
+    queryKey: ['questions', params.id],
+    queryFn: () => apiGet<Question>(`/api/questions/${params.id}`),
+  })
+
+  const [mutationError, setMutationError] = React.useState<string | null>(null)
+
+  const saveMutation = useMutation({
+    mutationFn: (values: QuestionFormValues) =>
+      apiPatch<Question>(
+        `/api/questions/${params.id}`,
+        normalizeQuestionFormForApi(values),
+      ),
+    onSuccess: (result) => {
+      if (!result.ok) {
+        setMutationError(result.error.message)
+        return
+      }
+      queryClient.invalidateQueries({ queryKey: ['questions'] })
+      router.push(`/questions/${params.id}`)
+    },
+    onError: (err) =>
+      setMutationError(err instanceof Error ? err.message : 'Save failed'),
+  })
+
+  if (isLoading) {
+    return (
+      <div className="rounded-md border bg-muted/20 p-10 text-center text-sm text-muted-foreground">
+        Loading question…
+      </div>
+    )
   }
 
-  async function handleSave(values: QuestionFormValues) {
-    // TODO: PATCH /api/questions/[id].
-    // eslint-disable-next-line no-console
-    console.info('[questions:edit]', params.id, values)
-    router.push(`/questions/${params.id}`)
+  if (!data || !data.ok) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <AlertCircle className="h-4 w-4" />
+          {data?.ok === false ? data.error.message : 'Could not load question.'}
+        </div>
+        <Button asChild variant="outline">
+          <Link href="/questions">Back to list</Link>
+        </Button>
+      </div>
+    )
   }
 
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold tracking-tight">Edit question</h1>
+      {mutationError && (
+        <div className="flex items-center gap-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <AlertCircle className="h-4 w-4" />
+          {mutationError}
+        </div>
+      )}
       <QuestionForm
         mode="edit"
-        initialValues={initial}
-        onSubmit={handleSave}
-        submitLabel="Save changes"
+        initialValues={toFormInitialValues(data.data)}
+        onSubmit={async (values) => {
+          await saveMutation.mutateAsync(values)
+        }}
+        submitLabel={saveMutation.isPending ? 'Saving…' : 'Save changes'}
       />
     </div>
   )

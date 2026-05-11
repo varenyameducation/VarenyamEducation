@@ -1,11 +1,15 @@
+'use client'
+
+import * as React from 'react'
 import Link from 'next/link'
-import { notFound } from 'next/navigation'
+import { useQuery } from '@tanstack/react-query'
 import katex from 'katex'
 import 'katex/dist/katex.min.css'
+import { AlertCircle } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Separator } from '@/components/ui/separator'
-import { MOCK_QUESTIONS } from '@/lib/ui/mocks/questions'
+import { apiGet, type Question } from '@/lib/ui/api'
 
 const LATEX_TOKEN = /\\[a-zA-Z]+|[\$\^_{}]/
 
@@ -29,9 +33,34 @@ function renderBlock(body: string): string {
 }
 
 export default function QuestionDetailPage({ params }: { params: { id: string } }) {
-  // TODO: replace with apiGet<Question>(`/api/questions/${params.id}`).
-  const q = MOCK_QUESTIONS.find((it) => it.id === params.id)
-  if (!q) notFound()
+  const { data, isLoading } = useQuery({
+    queryKey: ['questions', params.id],
+    queryFn: () => apiGet<Question>(`/api/questions/${params.id}`),
+  })
+
+  if (isLoading) {
+    return (
+      <div className="rounded-md border bg-muted/20 p-10 text-center text-sm text-muted-foreground">
+        Loading question…
+      </div>
+    )
+  }
+
+  if (!data || !data.ok) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <AlertCircle className="h-4 w-4" />
+          {data?.ok === false ? data.error.message : 'Could not load question.'}
+        </div>
+        <Button asChild variant="outline">
+          <Link href="/questions">Back to list</Link>
+        </Button>
+      </div>
+    )
+  }
+
+  const q = data.data
 
   return (
     <div className="space-y-6">

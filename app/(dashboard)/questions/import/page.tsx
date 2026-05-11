@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { AlertCircle, CheckCircle2, Download, FileSpreadsheet } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import { apiPost } from '@/lib/ui/api'
 import { cn } from '@/lib/utils'
 
 interface ImportError {
@@ -39,25 +40,14 @@ export default function ImportQuestionsPage() {
     fd.append('xlsx', xlsx)
     if (zip) fd.append('images', zip)
 
-    try {
-      const res = await fetch('/api/questions/import', { method: 'POST', body: fd })
-      const body = (await res.json().catch(() => null)) as
-        | { success: true; data: ImportResult }
-        | { success: false; error: { message: string } }
-        | null
-      if (!res.ok || !body || !body.success) {
-        const msg =
-          body && !body.success ? body.error.message : `Upload failed (HTTP ${res.status})`
-        setErrorMessage(msg)
-        setStatus('error')
-        return
-      }
-      setResult(body.data)
-      setStatus('done')
-    } catch (err: unknown) {
-      setErrorMessage(err instanceof Error ? err.message : 'Network error')
+    const res = await apiPost<ImportResult>('/api/questions/import', fd)
+    if (!res.ok) {
+      setErrorMessage(res.error.message)
       setStatus('error')
+      return
     }
+    setResult(res.data)
+    setStatus('done')
   }
 
   function downloadErrorCsv() {
