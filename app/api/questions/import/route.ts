@@ -2,6 +2,7 @@ import { type NextRequest } from 'next/server'
 import { err, ok } from '@/lib/api/response'
 import { logAudit } from '@/lib/auth/audit'
 import { isAuthFailure, requireAuth } from '@/lib/api/taxonomy'
+import { getClientIp } from '@/lib/api/questions'
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024 // 10MB per PRD §7.2
 const ALLOWED_EXCEL_TYPES = new Set([
@@ -56,11 +57,12 @@ export async function POST(request: NextRequest) {
     action: 'question.import.attempt',
     entity_type: 'question',
     meta: {
+      actor_role: auth.payload.role,
       file_name: file.name,
       file_size: file.size,
       has_images: images instanceof File,
     },
-    ip_address: request.headers.get('x-forwarded-for'),
+    ip_address: getClientIp(request),
   })
 
   // TODO: wire to lib/integrations/excel once integration/question-import merges.

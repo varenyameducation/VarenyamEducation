@@ -5,7 +5,7 @@ import { prisma } from '@/lib/db/prisma'
 import { err, ok } from '@/lib/api/response'
 import { logAudit } from '@/lib/auth/audit'
 import { isAuthFailure, isParseFailure, parseJsonBody, requireAuth } from '@/lib/api/taxonomy'
-import { updateQuestionSchema } from '@/lib/api/questions'
+import { getClientIp, updateQuestionSchema } from '@/lib/api/questions'
 
 const idSchema = z.string().uuid()
 
@@ -56,6 +56,12 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
   if (isParseFailure(parsed)) return parsed.response
 
   const input = parsed.data
+  if (input.is_verified !== undefined && !isAdmin) {
+    return err(403, {
+      code: 'NOT_ADMIN',
+      message: 'Only admin/super_admin can change verification status',
+    })
+  }
   const data: Prisma.QuestionUncheckedUpdateInput = {
     ...(input.course_id !== undefined ? { course_id: input.course_id ?? null } : {}),
     ...(input.chapter_id !== undefined ? { chapter_id: input.chapter_id ?? null } : {}),
@@ -89,7 +95,7 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
     ...(input.hint !== undefined ? { hint: input.hint ?? null } : {}),
     ...(input.image_urls !== undefined ? { image_urls: input.image_urls } : {}),
     ...(input.tags !== undefined ? { tags: input.tags } : {}),
-    ...(input.is_verified !== undefined && isAdmin ? { is_verified: input.is_verified } : {}),
+    ...(input.is_verified !== undefined ? { is_verified: input.is_verified } : {}),
   }
 
   const question = await prisma.question.update({
@@ -102,8 +108,12 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
     action: 'question.update',
     entity_type: 'question',
     entity_id: question.id,
-    meta: { changes: Object.keys(parsed.data) },
-    ip_address: request.headers.get('x-forwarded-for'),
+    meta: {
+      actor_role: auth.payload.role,
+      via: isCreator && !isAdmin ? 'creator' : 'admin',
+      changes: Object.keys(parsed.data),
+    },
+    ip_address: getClientIp(request),
   })
 
   return ok(question)
@@ -146,8 +156,12 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
     action: 'question.delete',
     entity_type: 'question',
     entity_id: params.id,
-    meta: { question_type: deleted.question_type, subject: deleted.subject },
-    ip_address: request.headers.get('x-forwarded-for'),
+    meta: {
+      actor_role: auth.payload.role,
+      question_type: deleted.question_type,
+      subject: deleted.subject,
+    },
+    ip_address: getClientIp(request),
   })
 
   return ok({ id: params.id, deleted_at: now })

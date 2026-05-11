@@ -4,7 +4,12 @@ import { prisma } from '@/lib/db/prisma'
 import { ok } from '@/lib/api/response'
 import { isAuthFailure, isParseFailure, parseJsonBody, requireAuth } from '@/lib/api/taxonomy'
 import { logAudit } from '@/lib/auth/audit'
-import { createQuestionSchema, listQuerySchema, paginatedEnvelope } from '@/lib/api/questions'
+import {
+  createQuestionSchema,
+  getClientIp,
+  listQuerySchema,
+  paginatedEnvelope,
+} from '@/lib/api/questions'
 
 export async function GET(request: NextRequest) {
   const auth = await requireAuth()
@@ -109,12 +114,13 @@ export async function POST(request: NextRequest) {
     entity_type: 'question',
     entity_id: question.id,
     meta: {
+      actor_role: auth.payload.role,
       question_type: question.question_type,
       subject: question.subject,
       difficulty: question.difficulty,
       exam_type: question.exam_type,
     },
-    ip_address: request.headers.get('x-forwarded-for'),
+    ip_address: getClientIp(request),
   })
 
   return ok(question, { status: 201 })
