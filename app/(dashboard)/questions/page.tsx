@@ -1,58 +1,56 @@
+'use client'
+
+import * as React from 'react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
+import { useQuery } from '@tanstack/react-query'
+import { AlertCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { QuestionFilters } from '@/components/questions/question-filters'
 import { QuestionCard } from '@/components/questions/question-card'
-import { MOCK_QUESTIONS, type QuestionListItem } from '@/lib/ui/mocks/questions'
+import { apiGet, type Paginated, type Question } from '@/lib/ui/api'
 
-const PAGE_SIZE = 10
+const PAGE_SIZE = 20
 
-function applyFilters(
-  items: QuestionListItem[],
-  sp: Record<string, string | string[] | undefined>,
-): QuestionListItem[] {
-  const get = (k: string) =>
-    typeof sp[k] === 'string' ? (sp[k] as string) : ''
-  const course = get('course')
-  const chapter = get('chapter')
-  const topic = get('topic')
-  const subject = get('subject')
-  const difficulty = get('difficulty')
-  const type = get('type')
-  const exam = get('exam')
-  const q = get('q').trim().toLowerCase()
-  return items.filter((it) => {
-    if (course && it.course_id !== course) return false
-    if (chapter && it.chapter_id !== chapter) return false
-    if (topic && it.topic_id !== topic) return false
-    if (subject && it.subject !== subject) return false
-    if (difficulty && it.difficulty !== difficulty) return false
-    if (type && it.question_type !== type) return false
-    if (exam && it.exam_type !== exam) return false
-    if (q && !it.question_body.toLowerCase().includes(q)) return false
-    return true
-  })
+// URL params (frontend) → API query params (backend at lib/api/questions.ts).
+function buildApiQuery(sp: URLSearchParams): string {
+  const next = new URLSearchParams()
+  const map: Record<string, string> = {
+    course: 'course_id',
+    chapter: 'chapter_id',
+    topic: 'topic_id',
+    subject: 'subject',
+    difficulty: 'difficulty',
+    type: 'question_type',
+    exam: 'exam_type',
+    q: 'search',
+  }
+  for (const [from, to] of Object.entries(map)) {
+    const v = sp.get(from)
+    if (v) next.set(to, v)
+  }
+  const page = sp.get('page') ?? '1'
+  next.set('page', page)
+  next.set('limit', String(PAGE_SIZE))
+  return next.toString()
 }
 
-export default function QuestionsListPage({
-  searchParams,
-}: {
-  searchParams: Record<string, string | string[] | undefined>
-}) {
-  // TODO: replace with apiGet<{ items: QuestionListItem[]; total: number }>('/api/questions?...')
-  //       when the backend lands. Until then we filter MOCK_QUESTIONS in-memory.
-  const filtered = applyFilters(MOCK_QUESTIONS, searchParams)
-  const pageRaw = Number(typeof searchParams.page === 'string' ? searchParams.page : '1')
-  const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw : 1
-  const total = filtered.length
+export default function QuestionsListPage() {
+  const sp = useSearchParams()
+  const qs = React.useMemo(() => buildApiQuery(sp ?? new URLSearchParams()), [sp])
+
+  const { data, error, isLoading, isFetching } = useQuery({
+    queryKey: ['questions', 'list', qs],
+    queryFn: () => apiGet<Paginated<Question>>(`/api/questions?${qs}`),
+  })
+
+  const page = Number(sp?.get('page') ?? '1') || 1
+  const items = data?.ok ? data.data.items : []
+  const total = data?.ok ? data.data.total : 0
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  const offset = (page - 1) * PAGE_SIZE
-  const visible = filtered.slice(offset, offset + PAGE_SIZE)
 
   const buildPageHref = (n: number) => {
-    const next = new URLSearchParams()
-    for (const [k, v] of Object.entries(searchParams)) {
-      if (typeof v === 'string' && v) next.set(k, v)
-    }
+    const next = new URLSearchParams(sp?.toString() ?? '')
     next.set('page', String(n))
     return `/questions?${next.toString()}`
   }
@@ -63,7 +61,9 @@ export default function QuestionsListPage({
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Question Bank</h1>
           <p className="text-sm text-muted-foreground">
-            {total} question{total === 1 ? '' : 's'} match your filters.
+            {isLoading
+              ? 'Loading…'
+              : `${total} question${total === 1 ? '' : 's'} match your filters.`}
           </p>
         </div>
         <div className="flex gap-2">
@@ -78,7 +78,18 @@ export default function QuestionsListPage({
 
       <QuestionFilters />
 
-      {visible.length === 0 ? (
+      {data && !data.ok && (
+        <div className="flex items-center gap-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <AlertCircle className="h-4 w-4" />
+          {data.error.message}
+        </div>
+      )}
+
+      {isLoading ? (
+        <div className="rounded-md border bg-muted/20 p-10 text-center text-sm text-muted-foreground">
+          Loading questions…
+        </div>
+      ) : items.length === 0 && data?.ok ? (
         <div className="flex flex-col items-center gap-3 rounded-md border border-dashed bg-muted/30 p-10 text-center">
           <p className="text-base font-medium">No questions match these filters.</p>
           <p className="text-sm text-muted-foreground">
@@ -89,8 +100,11 @@ export default function QuestionsListPage({
           </Button>
         </div>
       ) : (
-        <div className="grid gap-3">
-          {visible.map((q) => (
+        <div
+          className="grid gap-3"
+          aria-busy={isFetching ? 'true' : 'false'}
+        >
+          {items.map((q) => (
             <QuestionCard key={q.id} q={q} />
           ))}
         </div>

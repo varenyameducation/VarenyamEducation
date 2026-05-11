@@ -5,7 +5,7 @@ import Link from 'next/link'
 import katex from 'katex'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import type { QuestionListItem } from '@/lib/ui/mocks/questions'
+import type { Question } from '@/lib/ui/api'
 import type { DifficultyValue } from '@/lib/validation/question'
 import { cn } from '@/lib/utils'
 
@@ -46,7 +46,7 @@ function truncate(s: string, limit = 220): string {
   return s.length > limit ? `${s.slice(0, limit)}…` : s
 }
 
-export function QuestionCard({ q }: { q: QuestionListItem }) {
+export function QuestionCard({ q }: { q: Question }) {
   const html = React.useMemo(() => renderInline(truncate(q.question_body)), [q.question_body])
 
   return (
