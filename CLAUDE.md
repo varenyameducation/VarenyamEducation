@@ -26,7 +26,7 @@ gh auth status          # active account must be snehachoukseyobc
 
 ## Repo
 
-- Origin: https://github.com/varenyameducation/Varenyam
+- Origin: https://github.com/varenyameducation/VarenyamEducation
 - Default branch: `main`
 - Feature branches: `<role>/<slug>` (e.g. `frontend/login-form`)
 
