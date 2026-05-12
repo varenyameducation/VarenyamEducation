@@ -4,7 +4,7 @@ import { z } from 'zod'
 export const QUESTION_TYPE_VALUES = ['mcq', 'numerical', 'matrix_match', 'multi_select'] as const
 export const DIFFICULTY_VALUES = ['easy', 'medium', 'hard', 'advanced'] as const
 export const EXAM_TYPE_VALUES = ['school', 'board', 'jee', 'neet'] as const
-export const OPTION_VALUES = ['a', 'b', 'c', 'd'] as const
+export const OPTION_VALUES = ['A', 'B', 'C', 'D'] as const
 
 export type QuestionType = (typeof QUESTION_TYPE_VALUES)[number]
 export type Difficulty = (typeof DIFFICULTY_VALUES)[number]
