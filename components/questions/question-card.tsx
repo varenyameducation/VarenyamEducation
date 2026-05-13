@@ -2,11 +2,10 @@
 
 import * as React from 'react'
 import Link from 'next/link'
-import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { RenderedBody } from '@/lib/ui/render-body'
+import { RenderedBody, renderBodyToHtml } from '@/lib/ui/render-body'
 import type { Question } from '@/lib/ui/api'
 import type { DifficultyValue } from '@/lib/validation/question'
 import { formatTagLabel } from '@/lib/ui/mocks/m2m'
@@ -17,31 +16,6 @@ const DIFFICULTY_STYLES: Record<DifficultyValue, string> = {
   medium: 'bg-amber-100 text-amber-800 hover:bg-amber-100',
   hard: 'bg-orange-100 text-orange-700 hover:bg-orange-100',
   advanced: 'bg-rose-100 text-rose-700 hover:bg-rose-100',
-}
-
-const LATEX_TOKEN = /\\[a-zA-Z]+|[\^_{}]|\$[^$]+\$/
-
-function renderInline(body: string | null | undefined): string {
-  if (!body) return ''
-  if (!LATEX_TOKEN.test(body)) return escapeHtml(body)
-  try {
-    return katex.renderToString(body, {
-      throwOnError: false,
-      displayMode: false,
-      output: 'html',
-      strict: 'ignore',
-    })
-  } catch {
-    return escapeHtml(body)
-  }
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
 }
 
 const OPTION_KEYS = ['option_a', 'option_b', 'option_c', 'option_d'] as const
@@ -140,7 +114,7 @@ export function QuestionCard({ q, selected, onToggleSelected }: QuestionCardProp
                 <span className="mr-2 font-semibold">({letter})</span>
                 <span
                   className="inline"
-                  dangerouslySetInnerHTML={{ __html: renderInline(String(value)) }}
+                  dangerouslySetInnerHTML={{ __html: renderBodyToHtml(String(value)) }}
                 />
                 {isCorrect && (
                   <span className="ml-2 text-[10px] font-semibold uppercase text-emerald-700">

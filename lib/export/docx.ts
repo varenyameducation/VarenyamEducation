@@ -21,9 +21,8 @@ import katex from 'katex'
 import sharp from 'sharp'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { splitBody } from '@/lib/ui/render-body-html'
 import { getInstituteBranding, getTestWithQuestions, type Branding, type TestWithQuestions } from './branding'
-
-const LATEX_HINT = /\\[a-zA-Z]+|\$[^$]+\$/
 
 const PNG_PIXEL_WIDTH = 600
 
@@ -89,27 +88,51 @@ export async function renderLatexToPng(latex: string): Promise<Buffer> {
     .toBuffer()
 }
 
+async function mathImageRun(tex: string): Promise<ParagraphChild | null> {
+  try {
+    const png = await renderLatexToPng(tex)
+    const meta = await sharp(png).metadata()
+    return new ImageRun({
+      type: 'png',
+      data: png,
+      transformation: {
+        width: Math.min(meta.width ?? PNG_PIXEL_WIDTH, PNG_PIXEL_WIDTH),
+        height: Math.min(meta.height ?? 40, 60),
+      },
+    })
+  } catch {
+    return null
+  }
+}
+
+// Walk the body through the canonical splitter so `\(...\)`, `\[...\]`,
+// `$$...$$` segments each become their own rasterized math image, and prose
+// stays as plain text runs. The old implementation passed the entire
+// prose-with-delimiters string to katex.renderToString which exploded on the
+// `\(` token and silently fell back to a plain TextRun of the raw LaTeX.
 async function inlineRuns(source: string | null | undefined): Promise<ParagraphChild[]> {
   if (!source) return []
-  if (!LATEX_HINT.test(source)) {
+  const segments = splitBody(source)
+  if (segments.every((s) => s.kind === 'prose')) {
     return [new TextRun(source)]
   }
-  try {
-    const png = await renderLatexToPng(source)
-    const meta = await sharp(png).metadata()
-    return [
-      new ImageRun({
-        type: 'png',
-        data: png,
-        transformation: {
-          width: Math.min(meta.width ?? PNG_PIXEL_WIDTH, PNG_PIXEL_WIDTH),
-          height: Math.min(meta.height ?? 40, 60),
-        },
-      }),
-    ]
-  } catch {
-    return [new TextRun(source)]
+  const runs: ParagraphChild[] = []
+  for (const seg of segments) {
+    if (seg.kind === 'prose') {
+      if (seg.text.length > 0) runs.push(new TextRun(seg.text))
+    } else if (seg.kind === 'inline-math' || seg.kind === 'display-math') {
+      const run = await mathImageRun(seg.tex)
+      if (run) {
+        runs.push(run)
+      } else {
+        const fallback =
+          seg.kind === 'inline-math' ? `\\(${seg.tex}\\)` : `\\[${seg.tex}\\]`
+        runs.push(new TextRun(fallback))
+      }
+    }
+    // 'img' segments are stripped by buildBodyParagraphs before calling here.
   }
+  return runs
 }
 
 const IMG_PLACEHOLDER_RE = /\[\[IMG:([^\]]+)\]\]/g
