@@ -2,18 +2,22 @@
 
 import * as React from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import 'katex/dist/katex.min.css'
-import { AlertCircle } from 'lucide-react'
+import { AlertCircle, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ClientDate } from '@/components/ui/client-date'
 import { Separator } from '@/components/ui/separator'
+import { DeleteQuestionDialog } from '@/components/questions/delete-question-dialog'
 import { RenderedBody } from '@/lib/ui/render-body'
 import { apiGet, type Question } from '@/lib/ui/api'
 import { formatTagLabel } from '@/lib/ui/mocks/m2m'
 
 export default function QuestionDetailPage({ params }: { params: { id: string } }) {
+  const router = useRouter()
+  const [deleteOpen, setDeleteOpen] = React.useState(false)
   const { data, isLoading } = useQuery({
     queryKey: ['questions', params.id],
     queryFn: () => apiGet<Question>(`/api/questions/${params.id}`),
@@ -69,8 +73,23 @@ export default function QuestionDetailPage({ params }: { params: { id: string } 
           <Button asChild>
             <Link href={`/questions/${q.id}/edit`}>Edit</Link>
           </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            onClick={() => setDeleteOpen(true)}
+          >
+            <Trash2 className="mr-1.5 h-4 w-4" aria-hidden />
+            Delete
+          </Button>
         </div>
       </div>
+
+      <DeleteQuestionDialog
+        question={q}
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        onDeleted={() => router.push('/questions')}
+      />
 
       <article className="space-y-4 rounded-md border bg-card p-6">
         {tags.length > 0 && (

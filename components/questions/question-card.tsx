@@ -3,8 +3,10 @@
 import * as React from 'react'
 import Link from 'next/link'
 import 'katex/dist/katex.min.css'
+import { Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { DeleteQuestionDialog } from '@/components/questions/delete-question-dialog'
 import { RenderedBody, renderBodyToHtml } from '@/lib/ui/render-body'
 import type { Question } from '@/lib/ui/api'
 import type { DifficultyValue } from '@/lib/validation/question'
@@ -28,6 +30,7 @@ export interface QuestionCardProps {
 }
 
 export function QuestionCard({ q, selected, onToggleSelected }: QuestionCardProps) {
+  const [deleteOpen, setDeleteOpen] = React.useState(false)
   const correctSet = React.useMemo(
     () => new Set((q.correct_option ?? []).map((c) => c.toUpperCase())),
     [q.correct_option],
@@ -143,6 +146,15 @@ export function QuestionCard({ q, selected, onToggleSelected }: QuestionCardProp
         <Button asChild variant="outline" size="sm">
           <Link href={`/questions/${q.id}/edit`}>Edit</Link>
         </Button>
+        <Button
+          type="button"
+          variant="destructive"
+          size="sm"
+          onClick={() => setDeleteOpen(true)}
+        >
+          <Trash2 className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+          Delete
+        </Button>
         {q.is_verified ? (
           <Badge variant="secondary" className="ml-auto">
             Verified
@@ -153,6 +165,11 @@ export function QuestionCard({ q, selected, onToggleSelected }: QuestionCardProp
           </Badge>
         )}
       </footer>
+      <DeleteQuestionDialog
+        question={q}
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+      />
     </article>
   )
 }
