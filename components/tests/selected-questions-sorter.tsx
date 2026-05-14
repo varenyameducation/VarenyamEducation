@@ -18,39 +18,14 @@ import {
   sortableKeyboardCoordinates,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import { GripVertical, X } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
-import { stripImagePlaceholders } from '@/lib/ui/render-body'
+import { renderBodyToHtml, stripImagePlaceholders } from '@/lib/ui/render-body'
 import type { Question } from '@/lib/ui/api'
-
-const LATEX_TOKEN = /\\[a-zA-Z]+|[\$\^_{}]/
-
-function escapeHtml(s: string) {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-function renderInline(body: string): string {
-  if (!LATEX_TOKEN.test(body)) return escapeHtml(body)
-  try {
-    return katex.renderToString(body, {
-      throwOnError: false,
-      displayMode: false,
-      output: 'html',
-      strict: 'ignore',
-    })
-  } catch {
-    return escapeHtml(body)
-  }
-}
 
 function truncate(s: string, limit = 140): string {
   return s.length > limit ? `${s.slice(0, limit)}…` : s
@@ -209,7 +184,7 @@ function SortableRow({
         <div
           className="text-sm text-foreground/90"
           dangerouslySetInnerHTML={{
-            __html: renderInline(truncate(stripImagePlaceholders(item.question.question_body))),
+            __html: renderBodyToHtml(truncate(stripImagePlaceholders(item.question.question_body))),
           }}
         />
         <div className="flex flex-wrap items-center gap-2 pt-1">
