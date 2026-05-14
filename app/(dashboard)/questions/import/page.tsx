@@ -32,6 +32,8 @@ interface ImportResult {
   pages_processed?: number
   total_pages_in_doc?: number
   total_tokens?: number
+  vision_images_processed?: number
+  vision_images_replaced?: number
   errors: ImportError[]
   note?: string
   header?: { topic?: string | null; time_minutes?: number | null; total_marks?: number | null }
@@ -131,20 +133,22 @@ export default function ImportQuestionsPage() {
   const kind: FileKind = file ? fileKind(file) : 'unknown'
   const isImage = kind === 'image'
   const isPdf = kind === 'pdf'
-  const needsDefaults = kind === 'docx' || isPdf || isImage
-  // Vision opt-in only applies to PDFs; if the user switches files to a
-  // non-PDF after checking the box, treat it as off for submit + UI.
-  const visionActive = useVision && isPdf
+  const isDocx = kind === 'docx'
+  const isDocxOrPdf = isPdf || isDocx
+  const needsDefaults = isDocx || isPdf || isImage
+  // Vision opt-in applies to PDFs (per-page render) and DOCX (per-embedded-
+  // image scan). If the user switches files to a non-eligible kind after
+  // checking the box, treat it as off for submit + UI.
+  const visionActive = useVision && isDocxOrPdf
 
-  // Default the Vision checkbox to ON for PDFs (the workflow Vision is
-  // designed for) and OFF for everything else. Once the user manually
-  // toggles the checkbox, `userOverrode` flips true and the auto-default
-  // stops re-applying — so a user who unchecks Vision for one PDF can
-  // upload another PDF without it flicking back on.
+  // Default the Vision checkbox to ON for PDFs and DOCX (the workflows
+  // Vision is designed for) and OFF for everything else. Once the user
+  // manually toggles the checkbox, `userOverrode` flips true and the
+  // auto-default stops re-applying.
   React.useEffect(() => {
     if (userOverrode) return
-    setUseVision(isPdf)
-  }, [isPdf, userOverrode])
+    setUseVision(isDocxOrPdf)
+  }, [isDocxOrPdf, userOverrode])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -299,26 +303,23 @@ export default function ImportQuestionsPage() {
                 setUseVision(e.target.checked)
                 setUserOverrode(true)
               }}
-              disabled={!isPdf}
+              disabled={!isDocxOrPdf}
               aria-describedby="vision-help"
             />
-            <span className={cn('space-y-1 text-sm', !isPdf && 'opacity-60')}>
+            <span className={cn('space-y-1 text-sm', !isDocxOrPdf && 'opacity-60')}>
               <span className="font-medium">
                 Render math accurately (recommended for math papers)
               </span>
               <span id="vision-help" className="block text-xs text-muted-foreground">
-                Uses Gemini Vision to read each PDF page as an image, so
-                fractions, integrals, and exponents come through as proper
-                LaTeX. ~5 seconds per page; free up to 1500 pages/day.
-                Without this, math in PDFs comes out as flat text.
-                {file && !isPdf && (
-                  <span className="ml-1 font-medium">
-                    PDF only — current file is .{kind === 'unknown' ? '?' : kind}.
-                  </span>
-                )}
-                {!file && (
-                  <span className="ml-1 font-medium">
-                    Select a PDF to enable this option.
+                {!file ? (
+                  'Select a PDF or Word file to enable this option.'
+                ) : isPdf ? (
+                  'Renders each page through Gemini Vision so 2D math notation (fractions, integrals, exponents) comes through as proper LaTeX. ~5 seconds per page; uses Gemini free-tier quota.'
+                ) : isDocx ? (
+                  'Scans every image embedded in your Word document with Gemini Vision. Pasted equation screenshots get replaced with rendered LaTeX; actual diagrams stay as images. ~3 seconds per image.'
+                ) : (
+                  <span className="font-medium">
+                    PDF or Word only — current file is .{kind === 'unknown' ? '?' : kind}.
                   </span>
                 )}
               </span>
@@ -514,9 +515,11 @@ export default function ImportQuestionsPage() {
               <p className="font-medium">
                 {isImage
                   ? 'Reading your image with Gemini Vision (5–15 seconds)…'
-                  : visionActive
+                  : visionActive && isPdf
                     ? 'Importing via Gemini Vision (this may take 1–5 minutes for multi-page PDFs)…'
-                    : 'Parsing your document…'}
+                    : visionActive && isDocx
+                      ? 'Scanning embedded images with Gemini Vision (~3 seconds per image)…'
+                      : 'Parsing your document…'}
               </p>
             </div>
           </div>
@@ -585,6 +588,17 @@ export default function ImportQuestionsPage() {
                 : ''}
             </p>
           )}
+
+          {typeof result.vision_images_processed === 'number' &&
+            result.vision_images_processed > 0 && (
+              <p className="font-mono text-xs text-muted-foreground">
+                {result.vision_images_processed} embedded image
+                {result.vision_images_processed === 1 ? '' : 's'} scanned
+                {typeof result.vision_images_replaced === 'number'
+                  ? ` · ${result.vision_images_replaced} replaced with LaTeX, ${result.vision_images_processed - result.vision_images_replaced} kept as diagrams`
+                  : ''}
+              </p>
+            )}
 
           {result.header && (result.header.topic || result.header.total_marks) ? (
             <p className="text-xs text-muted-foreground">
