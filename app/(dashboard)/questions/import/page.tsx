@@ -3,7 +3,16 @@
 import * as React from 'react'
 import Link from 'next/link'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, ArrowRight, CheckCircle2, Download, FileText, Info } from 'lucide-react'
+import {
+  AlertCircle,
+  ArrowRight,
+  CheckCircle2,
+  Download,
+  FileText,
+  Info,
+  Loader2,
+  RotateCcw,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
@@ -20,6 +29,7 @@ interface ImportResult {
   imported: number
   mcq_count?: number
   subjective_count?: number
+  total_tokens?: number
   errors: ImportError[]
   note?: string
   header?: { topic?: string | null; time_minutes?: number | null; total_marks?: number | null }
@@ -28,18 +38,30 @@ interface ImportResult {
 type Status = 'idle' | 'uploading' | 'done' | 'error'
 
 type CourseOption = { id: string; name: string }
-type ChapterOption = { id: string; name: string; course_id: string; subject: string }
+type SubjectOption = { id: string; name: string; course_id: string }
+type ChapterOption = { id: string; name: string; subject_id: string }
 type TopicOption = { id: string; name: string; chapter_id: string }
 
-const SUBJECTS = ['Physics', 'Chemistry', 'Maths', 'Biology'] as const
 const DIFFICULTIES = ['easy', 'medium', 'hard', 'advanced'] as const
 const EXAM_TYPES = ['school', 'board', 'jee', 'neet'] as const
 
-function fileKind(name: string): 'xlsx' | 'docx' | 'pdf' | 'unknown' {
-  const lower = name.toLowerCase()
+type FileKind = 'xlsx' | 'docx' | 'pdf' | 'image' | 'unknown'
+
+function fileKind(file: File): FileKind {
+  const lower = file.name.toLowerCase()
   if (lower.endsWith('.xlsx')) return 'xlsx'
   if (lower.endsWith('.docx')) return 'docx'
   if (lower.endsWith('.pdf')) return 'pdf'
+  if (
+    lower.endsWith('.png') ||
+    lower.endsWith('.jpg') ||
+    lower.endsWith('.jpeg') ||
+    lower.endsWith('.webp')
+  ) {
+    return 'image'
+  }
+  const mime = (file.type || '').toLowerCase()
+  if (mime === 'image/png' || mime === 'image/jpeg' || mime === 'image/webp') return 'image'
   return 'unknown'
 }
 
@@ -50,58 +72,79 @@ export default function ImportQuestionsPage() {
   const [status, setStatus] = React.useState<Status>('idle')
   const [result, setResult] = React.useState<ImportResult | null>(null)
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null)
+  const [errorsExpanded, setErrorsExpanded] = React.useState(false)
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null)
 
   const [courseId, setCourseId] = React.useState('')
+  const [subjectId, setSubjectId] = React.useState('')
   const [chapterId, setChapterId] = React.useState('')
   const [topicId, setTopicId] = React.useState('')
-  const [subject, setSubject] = React.useState<(typeof SUBJECTS)[number]>('Maths')
-  const [difficulty, setDifficulty] = React.useState<(typeof DIFFICULTIES)[number]>('medium')
+  const [difficulty, setDifficulty] =
+    React.useState<(typeof DIFFICULTIES)[number]>('medium')
   const [examType, setExamType] = React.useState<(typeof EXAM_TYPES)[number]>('school')
   const [marksDefault, setMarksDefault] = React.useState(1)
 
   const coursesQuery = useQuery({
     queryKey: ['taxonomy', 'courses'],
-    queryFn: () => apiGet<{ items: CourseOption[] }>('/api/taxonomy/courses'),
+    queryFn: () => apiGet<{ items: CourseOption[] }>('/api/taxonomy/courses?limit=1000'),
+  })
+  const subjectsQuery = useQuery({
+    queryKey: ['taxonomy', 'subjects', courseId],
+    queryFn: () =>
+      apiGet<{ items: SubjectOption[] }>(
+        `/api/taxonomy/subjects?course_id=${courseId}&limit=1000`,
+      ),
+    enabled: Boolean(courseId),
   })
   const chaptersQuery = useQuery({
-    queryKey: ['taxonomy', 'chapters', courseId],
+    queryKey: ['taxonomy', 'chapters', subjectId],
     queryFn: () =>
-      apiGet<{ items: ChapterOption[] }>(`/api/taxonomy/chapters?course_id=${courseId}`),
-    enabled: Boolean(courseId),
+      apiGet<{ items: ChapterOption[] }>(
+        `/api/taxonomy/chapters?subject_id=${subjectId}&limit=1000`,
+      ),
+    enabled: Boolean(subjectId),
   })
   const topicsQuery = useQuery({
     queryKey: ['taxonomy', 'topics', chapterId],
     queryFn: () =>
-      apiGet<{ items: TopicOption[] }>(`/api/taxonomy/topics?chapter_id=${chapterId}`),
+      apiGet<{ items: TopicOption[] }>(
+        `/api/taxonomy/topics?chapter_id=${chapterId}&limit=1000`,
+      ),
     enabled: Boolean(chapterId),
   })
 
   const courses = coursesQuery.data?.ok ? coursesQuery.data.data.items : []
+  const subjects = subjectsQuery.data?.ok ? subjectsQuery.data.data.items : []
   const chapters = chaptersQuery.data?.ok ? chaptersQuery.data.data.items : []
   const topics = topicsQuery.data?.ok ? topicsQuery.data.data.items : []
 
-  const kind = file ? fileKind(file.name) : 'unknown'
-  const isDoc = kind === 'docx' || kind === 'pdf'
-  const needsDefaults = isDoc
+  const selectedSubjectName = subjects.find((s) => s.id === subjectId)?.name ?? ''
+
+  const kind: FileKind = file ? fileKind(file) : 'unknown'
+  const isImage = kind === 'image'
+  const needsDefaults = kind === 'docx' || kind === 'pdf' || isImage
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setErrorMessage(null)
     if (!file) {
-      setErrorMessage('Pick a .docx, .pdf, or .xlsx file first.')
+      setErrorMessage('Pick a .docx, .pdf, .xlsx, or image (.png/.jpg/.webp) file first.')
       return
     }
     if (kind === 'unknown') {
-      setErrorMessage('Only .docx, .pdf, and .xlsx files are supported.')
+      setErrorMessage(
+        'Only .docx, .pdf, .xlsx, and image (.png/.jpg/.jpeg/.webp) files are supported.',
+      )
       return
     }
-    if (needsDefaults && (!courseId || !chapterId || !topicId)) {
-      setErrorMessage('Pick Course, Chapter, and Topic for Word/PDF imports.')
+    if (needsDefaults && (!courseId || !subjectId || !chapterId || !topicId)) {
+      setErrorMessage('Pick Course, Subject, Chapter, and Topic for Word/PDF/image imports.')
       return
     }
 
     setStatus('uploading')
     setResult(null)
+    setErrorsExpanded(false)
 
     const fd = new FormData()
     fd.append('file', file)
@@ -110,7 +153,9 @@ export default function ImportQuestionsPage() {
       fd.append('course_id', courseId)
       fd.append('chapter_id', chapterId)
       fd.append('topic_id', topicId)
-      fd.append('subject', subject)
+      // BE still expects a `subject` string field; derive it from the
+      // selected subject row's human name so the hardcoded enum can die.
+      fd.append('subject', selectedSubjectName)
       fd.append('difficulty', difficulty)
       fd.append('exam_type', examType)
       fd.append('marks_default', String(marksDefault))
@@ -125,6 +170,16 @@ export default function ImportQuestionsPage() {
     setResult(res.data)
     setStatus('done')
     qc.invalidateQueries({ queryKey: ['questions'] })
+  }
+
+  function resetForAnotherImport() {
+    setFile(null)
+    setZip(null)
+    setResult(null)
+    setErrorMessage(null)
+    setErrorsExpanded(false)
+    setStatus('idle')
+    if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
   function downloadErrorCsv() {
@@ -150,7 +205,8 @@ export default function ImportQuestionsPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Bulk import questions</h1>
           <p className="text-sm text-muted-foreground">
-            Upload a Word (.docx), PDF, or Excel (.xlsx) file. MCQs are auto-detected.
+            Upload a Word (.docx), PDF, Excel (.xlsx), or image (PNG / JPG / WebP) file.
+            MCQs auto-detected.
           </p>
         </div>
         <Button asChild variant="outline">
@@ -163,12 +219,24 @@ export default function ImportQuestionsPage() {
 
       <div className="flex items-start gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
         <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-        <div>
-          <strong>Word/PDF</strong>: detects all questions in the form <code>Q1.</code> body{' '}
-          <code>[marks]</code>. MCQs (with <code>(A) (B) (C) (D)</code> options) and
-          subjective questions (short/long answer, case-based, assertion-reason) all import.
-          MCQs default to <em>correct_option = "A"</em> and{' '}
-          <em>is_verified = false</em> — review each in the Question Bank to set the actual answer.
+        <div className="space-y-1">
+          <p>
+            <strong>Images</strong>: Gemini Vision extracts the question with LaTeX
+            math (one call, takes a few seconds).
+          </p>
+          <p>
+            <strong>PDFs and DOCX</strong>: text is parsed and math is normalized to
+            LaTeX heuristically — math-heavy 2D layouts may need manual cleanup after
+            import. MCQs (with <code>(A) (B) (C) (D)</code> options) and subjective
+            questions (short/long answer, case-based, assertion-reason) all import.
+          </p>
+          <p>
+            Question numbering can be <code>1.&nbsp;body&nbsp;[marks]</code>,{' '}
+            <code>Q1.&nbsp;body&nbsp;[marks]</code>, or similar. MCQs default to{' '}
+            <em>correct_option = &ldquo;A&rdquo;</em> and{' '}
+            <em>is_verified = false</em> — review each in the Question Bank to set
+            the actual answer.
+          </p>
         </div>
       </div>
 
@@ -178,11 +246,12 @@ export default function ImportQuestionsPage() {
         aria-label="Bulk import"
       >
         <div className="space-y-2">
-          <Label htmlFor="file">Source file (.docx, .pdf, .xlsx)</Label>
+          <Label htmlFor="file">Source file (.docx, .pdf, .xlsx, image)</Label>
           <input
             id="file"
+            ref={fileInputRef}
             type="file"
-            accept=".docx,.pdf,.xlsx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            accept=".docx,.pdf,.xlsx,.png,.jpg,.jpeg,.webp,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/png,image/jpeg,image/webp"
             required
             onChange={(e) => setFile(e.target.files?.[0] ?? null)}
             className="block w-full text-sm file:mr-3 file:rounded-md file:border file:border-input file:bg-background file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-foreground hover:file:bg-accent"
@@ -201,10 +270,10 @@ export default function ImportQuestionsPage() {
               Defaults for all imported questions
             </legend>
             <p className="text-xs text-muted-foreground">
-              These tags will be applied to every imported question. You can add
-              more tags later in bulk from the question bank.
+              These tags will be applied to every imported question. You can add more
+              tags later in bulk from the question bank.
             </p>
-            <div className="grid gap-4 md:grid-cols-3">
+            <div className="grid gap-4 md:grid-cols-4">
               <div className="space-y-2">
                 <Label htmlFor="course_id">Course</Label>
                 <Select
@@ -212,6 +281,7 @@ export default function ImportQuestionsPage() {
                   value={courseId}
                   onChange={(e) => {
                     setCourseId(e.target.value)
+                    setSubjectId('')
                     setChapterId('')
                     setTopicId('')
                   }}
@@ -231,6 +301,34 @@ export default function ImportQuestionsPage() {
                 </Select>
               </div>
               <div className="space-y-2">
+                <Label htmlFor="subject_id">Subject</Label>
+                <Select
+                  id="subject_id"
+                  value={subjectId}
+                  onChange={(e) => {
+                    setSubjectId(e.target.value)
+                    setChapterId('')
+                    setTopicId('')
+                  }}
+                  disabled={!courseId}
+                >
+                  <option value="">
+                    {!courseId
+                      ? 'Pick course first'
+                      : subjectsQuery.isLoading
+                        ? 'Loading…'
+                        : subjects.length === 0
+                          ? 'No subjects'
+                          : 'Select subject…'}
+                  </option>
+                  {subjects.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="space-y-2">
                 <Label htmlFor="chapter_id">Chapter</Label>
                 <Select
                   id="chapter_id"
@@ -239,11 +337,11 @@ export default function ImportQuestionsPage() {
                     setChapterId(e.target.value)
                     setTopicId('')
                   }}
-                  disabled={!courseId}
+                  disabled={!subjectId}
                 >
                   <option value="">
-                    {!courseId
-                      ? 'Pick course first'
+                    {!subjectId
+                      ? 'Pick subject first'
                       : chaptersQuery.isLoading
                         ? 'Loading…'
                         : chapters.length === 0
@@ -282,21 +380,7 @@ export default function ImportQuestionsPage() {
                 </Select>
               </div>
             </div>
-            <div className="grid gap-4 md:grid-cols-4">
-              <div className="space-y-2">
-                <Label htmlFor="subject">Subject</Label>
-                <Select
-                  id="subject"
-                  value={subject}
-                  onChange={(e) => setSubject(e.target.value as (typeof SUBJECTS)[number])}
-                >
-                  {SUBJECTS.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </Select>
-              </div>
+            <div className="grid gap-4 md:grid-cols-3">
               <div className="space-y-2">
                 <Label htmlFor="difficulty">Difficulty</Label>
                 <Select
@@ -342,8 +426,8 @@ export default function ImportQuestionsPage() {
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              Per-question marks parsed from <code>[N]</code> in the document override the
-              default.
+              Per-question marks parsed from <code>[N]</code> in the document override
+              the default.
             </p>
           </fieldset>
         )}
@@ -361,12 +445,25 @@ export default function ImportQuestionsPage() {
           </div>
         )}
 
+        {status === 'uploading' && (
+          <div className="flex items-start gap-3 rounded-md border border-primary/30 bg-primary/5 px-3 py-2.5 text-sm">
+            <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-primary" />
+            <div className="flex-1 space-y-1">
+              <p className="font-medium">
+                {isImage
+                  ? 'Reading your image with Gemini Vision (5–15 seconds)…'
+                  : 'Parsing your document…'}
+              </p>
+            </div>
+          </div>
+        )}
+
         <div className="flex items-center justify-end gap-3 border-t pt-4">
           <Button asChild variant="ghost">
             <Link href="/questions">Cancel</Link>
           </Button>
           <Button type="submit" disabled={status === 'uploading'}>
-            {status === 'uploading' ? 'Uploading…' : 'Start import'}
+            {status === 'uploading' ? 'Importing…' : 'Start import'}
           </Button>
         </div>
 
@@ -384,27 +481,41 @@ export default function ImportQuestionsPage() {
             <div className="flex items-center gap-2">
               <CheckCircle2 className="h-5 w-5 text-emerald-600" />
               <h2 className="text-lg font-semibold">
-                {result.imported} imported{' '}
-                {typeof result.mcq_count === 'number' && typeof result.subjective_count === 'number'
-                  ? `(${result.mcq_count} MCQ · ${result.subjective_count} subjective)`
-                  : ''}{' '}
-                · {result.errors.length} failed
+                {result.imported} question{result.imported === 1 ? '' : 's'} imported
+                {typeof result.mcq_count === 'number' &&
+                typeof result.subjective_count === 'number'
+                  ? ` · ${result.mcq_count} MCQ · ${result.subjective_count} subjective`
+                  : ''}
               </h2>
             </div>
-            {result.errors.length > 0 && (
-              <Button type="button" variant="outline" onClick={downloadErrorCsv}>
-                <Download className="mr-2 h-4 w-4" />
-                Download error CSV
+            <div className="flex flex-wrap items-center gap-2">
+              {result.errors.length > 0 && (
+                <Button type="button" variant="outline" onClick={downloadErrorCsv}>
+                  <Download className="mr-2 h-4 w-4" />
+                  Download error CSV
+                </Button>
+              )}
+              <Button type="button" variant="outline" onClick={resetForAnotherImport}>
+                <RotateCcw className="mr-2 h-4 w-4" />
+                Import another
               </Button>
-            )}
+            </div>
           </header>
+
+          {isImage && typeof result.total_tokens === 'number' && (
+            <p className="text-xs text-muted-foreground">
+              1 image processed · ~{result.total_tokens.toLocaleString()} tokens (Gemini)
+            </p>
+          )}
 
           {result.header && (result.header.topic || result.header.total_marks) ? (
             <p className="text-xs text-muted-foreground">
               Detected from document:
               {result.header.topic ? ` Topic: ${result.header.topic};` : ''}
               {result.header.time_minutes ? ` Time: ${result.header.time_minutes}m;` : ''}
-              {result.header.total_marks ? ` Total Marks: ${result.header.total_marks};` : ''}
+              {result.header.total_marks
+                ? ` Total Marks: ${result.header.total_marks};`
+                : ''}
             </p>
           ) : null}
 
@@ -415,26 +526,40 @@ export default function ImportQuestionsPage() {
           )}
 
           {result.errors.length > 0 && (
-            <div className="overflow-hidden rounded-md border">
-              <table className="w-full text-sm">
-                <thead className="bg-muted/40 text-left text-xs uppercase">
-                  <tr>
-                    <th className="px-3 py-2">Q#</th>
-                    <th className="px-3 py-2">Reason</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.errors.map((e, idx) => (
-                    <tr
-                      key={`${e.row ?? 'r'}-${idx}`}
-                      className={cn('border-t', idx % 2 === 0 && 'bg-muted/10')}
-                    >
-                      <td className="px-3 py-2 font-mono">{e.row ?? '—'}</td>
-                      <td className="px-3 py-2">{e.reason}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="space-y-2">
+              <button
+                type="button"
+                className="text-xs font-medium text-primary underline-offset-2 hover:underline"
+                onClick={() => setErrorsExpanded((v) => !v)}
+                aria-expanded={errorsExpanded}
+              >
+                {errorsExpanded
+                  ? `Hide ${result.errors.length} error${result.errors.length === 1 ? '' : 's'}`
+                  : `Show ${result.errors.length} error${result.errors.length === 1 ? '' : 's'}`}
+              </button>
+              {errorsExpanded && (
+                <div className="overflow-hidden rounded-md border">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/40 text-left text-xs uppercase">
+                      <tr>
+                        <th className="px-3 py-2">Q#</th>
+                        <th className="px-3 py-2">Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {result.errors.map((e, idx) => (
+                        <tr
+                          key={`${e.row ?? 'r'}-${idx}`}
+                          className={cn('border-t', idx % 2 === 0 && 'bg-muted/10')}
+                        >
+                          <td className="px-3 py-2 font-mono">{e.row ?? '—'}</td>
+                          <td className="px-3 py-2">{e.reason}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 
