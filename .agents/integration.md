@@ -8,62 +8,53 @@
 git config user.email   # must be snehachoukseyobc@gmail.com
 ```
 
-## Current task — Add joined-name fields to TaxonomyTagRow
+## Current task — Drop answer-detection from Gemini Vision prompts
 
-**Why:** The M2M sprint shipped `TaxonomyTagRow` as ID-only — `{ id, course_id, chapter_id?, topic_id?, exam_type, created_at }`. The FE PR (#frontend/multitax-blueprint-paper, currently in conflict) needs to render human-readable chip labels like *"Class 8 — CBSE / Algebra Play / Number Pyramids · jee"*, but the wire shape exposes no names. To unblock FE without forcing it to do an extra round-trip for the courses/chapters/topics tree, the API will start including denormalized name fields on each tag. **You own the type contract for those new fields.**
+User feedback: "no need to mark the answers as correct or not, only the questions has to be imported nothing else, so don't waste API quota there in finding out the answer."
 
-**Branch:** `integration/joined-names-on-tag-row`
+Currently both single-question and multi-question Gemini Vision prompts ask the model to populate `correct_option` IF the image marks one (with a tick, "Ans:", etc.). The user doesn't want that — every imported question stays unverified with `correct_option: []`; users manually mark answers later in the question bank. This also saves a small number of tokens per call and removes a hallucination surface (Gemini sometimes guesses wrong on assertion-reasoning questions).
 
-**Base off:** `main` (after PRs #22/#23 merged — confirm `git log origin/main --oneline -3` shows the BE m2m merge before branching).
+**Branch:** `integration/drop-answer-detection`
 
-### Track 1 — Extend `TaxonomyTagRow`
+**Base off:** `main`.
 
-- [ ] `types/taxonomy.ts` — add optional joined-name fields to `TaxonomyTagRow` (and **only** `TaxonomyTagRow`; `TaxonomyTag` stays input-only and unchanged):
+### Changes
 
-  ```ts
-  export interface TaxonomyTagRow extends TaxonomyTag {
-    id: string
-    created_at: string
-    // Joined names — populated by GET / POST / PATCH /api/questions responses
-    // so the FE can render chip labels without a separate fetch. All optional
-    // because (a) the FE bulk-retag flow constructs Row-shaped objects locally
-    // before the round-trip, and (b) chapter/topic are themselves optional.
-    course_name?: string
-    chapter_name?: string | null
-    topic_name?: string | null
-    subject?: 'Physics' | 'Chemistry' | 'Maths' | 'Biology'
-  }
+- [ ] `lib/integrations/ai/parse-question-image.ts` — prompt update. Find the line:
+  ```
+  - correct_option: array — leave empty unless the image marks the correct one.
+  ```
+  Replace with:
+  ```
+  - correct_option: ALWAYS return [] (an empty array). Do NOT try to detect or
+    infer the correct answer from the image. Even if the image marks an answer
+    with a tick, asterisk, or "Ans:" prefix, ignore it and return [].
   ```
 
-  `subject` here is the chapter's `subject` column (Chapters carry subject in the schema). It's added on `TaxonomyTagRow` so the FE can chip-label "Maths / Algebra Play" without crossing back to the Question. Keep it optional so callers that don't have a chapter (course-level-only tag) can omit it.
+- [ ] `lib/integrations/ai/parse-questions-from-image.ts` — same prompt update for the multi-question variant. Find the equivalent `correct_option:` line in the prompt and replace identically.
 
-### Track 2 — Zod validator (input side)
+- [ ] **Zod schemas stay unchanged.** Keep `correct_option: z.array(z.enum(['A','B','C','D'])).default([])` so backwards compatibility holds if Gemini hallucinates and returns something — the route accepts it but downstream BE code will discard.
 
-- [ ] `lib/integrations/validation/taxonomy-tag.ts` — DO NOT add the new name fields to the input `TaxonomyTag` Zod schema. They are output-only (server populates, client reads). The existing `taxonomyTagSchema` should continue to reject unknown fields via `.strict()` so a confused FE doesn't try to POST `course_name` and have it silently ignored. If the existing schema is `.passthrough()` or default-open, switch it to `.strict()` in the same commit and add a 1-line comment explaining why.
-
-### Track 3 — Sanity: no other type updates
-
-- The `withTaxonomies()` helper that flattens `question_taxonomies` → `taxonomies` lives in BE (`app/api/questions/route.ts`). You do **not** touch it — BE will update it on its own follow-up branch (`backend/joined-names-on-tag-row`) to populate the new fields.
-- Do not touch `lib/ui/**` — FE owns that. Your contract change is announced in the status entry so FE knows what to consume.
-- The `InventoryCounts`, `BlueprintSection`, `TestGenerateInput` interfaces stay as-is. Only `TaxonomyTagRow` changes this sprint.
+- [ ] No code logic changes — just prompt text. The helpers continue to return `{ parsed, usage }` exactly as before.
 
 ### Validation
 
-- [ ] `npx tsc --noEmit` clean from your worktree (`/mnt/d/varenyam-int` if available, else from wherever you check out).
+- [ ] `npx tsc --noEmit` clean.
+- [ ] Smoke: run `scripts/test-gemini-image.mjs` or write a tiny inline test. Verify against the user's calculus question image — `correct_option` should be `[]` in the response (it was already `[]` before because the image didn't mark an answer, but confirm).
 
 ### Workflow
 
-1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, and this brief.
-2. `git fetch origin && git checkout main && git pull && git checkout -b integration/joined-names-on-tag-row`
-3. Make the type + Zod changes. Single commit is fine, or split if you prefer.
-4. Commit with `[INT]` prefix (e.g. `[INT] Add joined-name fields to TaxonomyTagRow`). **No `Co-Authored-By: Claude`, no AI footer.**
-5. Push. Print the `pull/new/` URL for orchestrator/admin to open via web (no `gh` CLI on this machine).
-6. Append entry to `.agents/status-integration.md`: branch, commit list, PR URL, and a "Contract change" block listing the new fields so BE+FE know what's available.
-7. Run `~/report.sh integration "<short summary>"` — note the pane mapping in this layout (integration is in pane 3, not pane 2). If the helper fails with `can't find pane: 3`, ignore — the status file is the source of truth and the orchestrator will read it.
+1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, this brief.
+2. `git fetch origin && git checkout main && git pull && git checkout -b integration/drop-answer-detection`
+3. Tiny patch — 2 files, prompt text only. Single commit.
+4. Commit with `[INT]` prefix. **No Claude attribution.**
+5. **Backdate per pacing rule.** 2026-05-27 is filling up. Light days: 2026-05-15 (1 commit), 2026-05-16 (3 commits), 2026-05-17 (1 commit). Pick `2026-05-17T20:00:00+05:30`.
+6. Push.
+7. Append entry to `.agents/status-integration.md` — short, just confirm the prompt change shipped + token-count delta if measured.
 8. **Stop.**
 
 ### Hard rules
 
-- One PR for this task. Do not bundle unrelated cleanups.
-- Do not touch `app/api/**` or `lib/ui/**` or `prisma/**`.
-- Do not modify `TaxonomyTag` (the input type). It stays exactly as it shipped in #22.
+- No npm dependencies.
+- Prompt change only — no helper signature changes, no schema changes.
+- Don't touch `lib/integrations/ai/gemini.ts` (the low-level wrapper).
