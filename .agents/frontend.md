@@ -8,120 +8,92 @@
 git config user.email   # must be snehachoukseyobc@gmail.com
 ```
 
-## Current task — Resolve m2m PR conflict; consume joined-name fields
+## Current task — Import page revamp (simplified): 4-tier picker + image accept + clean results panel
 
-**Why:** The frontend M2M PR (`frontend/multitax-blueprint-paper`, 5 commits, already pushed) has a textual conflict with main in `lib/ui/api.ts` plus a deeper type mismatch:
+**Critical context.** The previous sprint had you build a PDF Vision progress UI (SSE / per-page progress / "page X of N") on top of a BE Gemini-per-page pipeline. The user has rejected the Gemini-PDF path and reverted BE to plain text extraction + a heuristic LaTeX normalizer. **PDFs are instant again — no progress UI needed.** Single-image upload at the import page DOES still use Gemini (one call, takes 5-15s).
 
-- FE built against a local mock `TaxonomyTag` in `@/lib/ui/mocks/m2m` that carries `course_name`, `chapter_name`, `topic_name`, `subject` (denormalized names for chip rendering).
-- INT + BE shipped a canonical `TaxonomyTagRow` in `@/types/taxonomy` that is ID-only.
+You shipped a previous version of this work on branch `frontend/import-page-revamp` with SSE plumbing — that branch is **not being merged**. You can cherry-pick the picker / image-accept / results panel pieces, but drop the SSE consumer.
 
-INT has now landed `integration/joined-names-on-tag-row` (adds optional `course_name`/`chapter_name?`/`topic_name?`/`subject?` to `TaxonomyTagRow`). BE has landed `backend/joined-names-on-tag-row` (populates those fields on every `/api/questions` response). **Your job is to rebase, resolve the conflict, drop the mock TaxonomyTag type definition, and migrate all callsites to the canonical type.**
+**Branch:** `frontend/import-page-clean` (NEW branch)
 
-**Branch:** `frontend/multitax-blueprint-paper` (existing — don't create a new one; rebase the existing branch).
+**Base off:** `backend/bulk-import-heuristic` (BE's redo). If BE hasn't pushed yet when you start, wait or base off `main` and stub.
 
-### Workflow at a glance
+---
 
-1. `git fetch origin && git checkout frontend/multitax-blueprint-paper && git pull`
-2. `git rebase origin/main` — expect a conflict in `lib/ui/api.ts`. Resolve by taking main's side (the canonical interface) **and** dropping the legacy `course`/`chapter`/`topic` joined fields on `Question` (BE no longer returns them).
-3. Cascade-fix the consumer files (listed below).
-4. `npx tsc --noEmit` clean.
-5. `npx next build` (optional but recommended) to catch any runtime-only issues.
-6. Force-push the rebased branch: `git push --force-with-lease`.
-7. Append status entry; stop.
+## Track 1 — Replace 3-tier dropdowns + hardcoded SUBJECTS with the 4-tier live cascade (KEEP)
 
-### File-by-file changes
+`app/(dashboard)/questions/import/page.tsx`. Same as the prior sprint's brief: delete the `SUBJECTS = ['Physics', 'Chemistry', 'Maths', 'Biology']` enum, replace the 3-tier (Course / Chapter / Topic + standalone Subject enum) with the 4-tier live cascade (Course → Subject → Chapter → Topic) backed by `/api/taxonomy/courses|subjects|chapters|topics`.
 
-#### `lib/ui/api.ts`
+If you can cleanly extract a shared `<TaxonomyCascade>` component used by both this page and the single-question `taxonomy-tag-picker.tsx`, do so. Otherwise inline 4 `<Select>` elements with copied fetch logic and note the duplication in your status entry.
 
-- Take main's side for both conflict hunks.
-- Final shape of the import:
-  ```ts
-  import type { TaxonomyTagRow } from '@/types/taxonomy'
-  ```
-- Final shape of `Question`:
-  ```ts
-  export interface Question {
-    id: string
-    subject: SubjectValue
-    ...
-    taxonomies: TaxonomyTagRow[]
-    // No more course/chapter/topic joined fields.
-  }
-  ```
+## Track 2 — Accept image uploads (KEEP)
 
-#### `lib/ui/mocks/m2m.ts`
+`<input type="file" accept=".xlsx,.docx,.pdf,.png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp">`. Update the help copy:
 
-- Delete the local `export type TaxonomyTag = { course_id; course_name; ... }` definition.
-- Re-export from canonical:
-  ```ts
-  export type { TaxonomyTag, TaxonomyTagRow } from '@/types/taxonomy'
-  ```
-- `formatTagLabel(tag)` — change parameter type to `TaxonomyTagRow`. Read `tag.course_name`, `tag.chapter_name`, `tag.topic_name` (all now live on the canonical row when populated by BE). Fall back to the IDs (formatted as short strings) when names are missing — this keeps the function safe for locally-constructed rows that haven't round-tripped through the API yet.
-- `deriveQuestionTags(q)` — this used to fabricate a `TaxonomyTag` from the legacy `Question.course/chapter/topic` joined fields. Those are GONE on `Question`. **Delete `deriveQuestionTags` and all its callsites** — consumers should read `q.taxonomies` directly. If a callsite needs a "first tag" fallback for legacy untagged questions, use `q.taxonomies[0]` and gate the render with `q.taxonomies.length > 0`.
-- `MOCK_M2M_TAGS_BY_QUESTION` — update each mock row to be the canonical shape: `{ id, course_id, chapter_id?, topic_id?, exam_type, created_at, course_name, chapter_name?, topic_name?, subject? }`. Generate plausible `id`/`created_at` for the mocks (e.g. `crypto.randomUUID()` and `new Date().toISOString()` evaluated once at module load, or hard-coded fixtures).
-- `LegacyTaggedQuestion` type can be deleted (its only consumer was `deriveQuestionTags`).
+> Upload a Word (.docx), PDF, Excel (.xlsx), or image (PNG / JPG / WebP) file.
+> For images, Gemini Vision extracts the question with LaTeX math (one call, takes a few seconds).
+> For PDFs and DOCX, text is parsed and math is normalized to LaTeX heuristically — math-heavy 2D layouts may need manual cleanup after import.
+> MCQs auto-detected from `(A) (B) (C) (D)` options. Question numbering can be `1.` `Q1.` or similar.
 
-#### `components/questions/taxonomy-tag-picker.tsx`
+## Track 3 — Results panel (SIMPLIFIED — no per-page progress)
 
-- The component holds picker state. Internal `value: TaxonomyTag[]` from `@/types/taxonomy` should remain the input/output type (no names) — the picker BUILDS tags, doesn't render labels for tags-in-flight. For chip labels, take a parallel `taxonomyOptions: TaxonomyTagRow[]` prop that has names, or do a lookup against the in-context course/chapter/topic state that the parent already has.
-- Cleanest interface change: keep `value: TaxonomyTag[]` (canonical input shape, name-less) and add a `formatLabel?: (tag: TaxonomyTag) => string` callback prop that the parent supplies. Parent has access to its course/chapter/topic state and can format. Default the formatter to a fallback that prints `chapter_id ?? course_id`.
-- This is a real refactor — take care to keep the existing keyboard/blur behavior.
+Drop the SSE / "Page X of N" UI entirely. Single spinner + clear copy while the upload is in flight:
 
-#### `components/questions/question-form.tsx`
+- For PDF / DOCX / XLSX: "Parsing your document…" (sub-second to a couple seconds; just show indeterminate spinner)
+- For image: "Reading your image with Gemini Vision (5-15 seconds)…"
 
-- Update the `taxonomies` field state to be `TaxonomyTag[]` (without names — they get added by the server after POST). On form submit, you already POST `taxonomies` to `/api/questions`; the request body is unchanged. On form mount when editing an existing question, you read `q.taxonomies` which is now `TaxonomyTagRow[]` — strip the row's `id`/`created_at`/name fields before seeding the picker's state.
-- The legacy `course_id`/`chapter_id`/`topic_id`/`exam_type` top-level fields you held back as v1-compat should now be REMOVED from the form schema and submit body — BE only accepts `taxonomies` now.
+On response (HTTP 200):
+- Big success row: "✓ 47 questions imported · 39 MCQ · 8 subjective"
+- Below: errors list (collapsible) showing partial failures, if any. Use the existing envelope's `errors[]` array.
+- For image uploads: also show "1 image processed · ~1.2k tokens (Gemini)" so the user has visibility on quota use.
+- Clear "Import another" button to reset the form.
 
-#### `components/questions/bulk-retag-modal.tsx`
+Drop:
+- `Cancel` button (no longer needed — operations are short)
+- AbortController plumbing
+- Per-page progress bar
+- `pages_processed` / `total_pages_in_doc` / `total_tokens` display for PDFs (BE may still return those fields for back-compat — just don't render them prominently; an "Advanced details" expander showing them is fine)
 
-- Same picker integration treatment as the form. Internal state `tags: TaxonomyTag[]`.
+## Salvage from the prior `frontend/import-page-revamp` branch
 
-#### `components/questions/question-card.tsx`
+You shipped that with SSE + 4-tier picker + image accept + results panel. The salvageable parts:
+- 4-tier picker / cascade extraction → **keep**
+- Image-accept attribute + help copy → **keep, but update copy** per the new direction
+- Results panel structure → **keep skeleton, simplify** per Track 3 above
+- SSE event consumer (`response.body.getReader()` chunking + `data:` line parsing) → **discard**
+- AbortController / Cancel button → **discard**
+- Per-page progress UI → **discard**
 
-- Currently calls `deriveQuestionTags(q)` to get tags. Replace with `q.taxonomies`. Use `formatTagLabel(tag)` directly (now name-aware).
+Cleanest: branch fresh off `backend/bulk-import-heuristic`, re-create the picker + image accept + simplified results panel. Don't try to surgically remove SSE from the existing branch — too tangled.
 
-#### `app/(dashboard)/questions/[id]/page.tsx`
+## Validation
 
-- Same `deriveQuestionTags` → `q.taxonomies` swap. The header chip strip now reads server-provided names.
-- If this page reads `q.exam_type` anywhere, replace with `q.taxonomies[0]?.exam_type ?? '—'` or a de-duped list of all `taxonomies[].exam_type` values.
+- [ ] `npx tsc --noEmit` clean from `/mnt/d/varenyam-fe`.
+- [ ] Manual test in dev:
+  1. `/questions/import` shows all 5 real courses in the Course dropdown (no `Class 11 — PCM / JEE Foundation / NEET Class 12` mock leftovers).
+  2. Cascade: pick CBSE → Subject populates → pick Maths → Chapter populates → etc.
+  3. File input accepts PDF, DOCX, XLSX, PNG, JPG, WebP.
+  4. Upload `65-S-1_Mathematics-7.pdf` → spinner appears briefly → results panel shows imported count. Math will be partially garbled — that's expected (BE's heuristic doesn't recover 2D layouts).
+  5. Upload an image of a math question → spinner with "Reading your image with Gemini Vision…" → results panel shows 1 question imported with clean LaTeX.
+- [ ] Regression: old Class-8 DOCX still imports correctly.
 
-#### `app/(dashboard)/questions/[id]/edit/page.tsx`
+## Workflow
 
-- Drops `import type { TaxonomyTag } from '@/lib/ui/mocks/m2m'` — switch to `@/types/taxonomy`.
-- The `seedTag` derivation that reads `q.course_id` etc. won't compile (`Question` no longer has these fields). Replace with `const seedTags = q.taxonomies` (already an array; pass directly to the form).
+1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, this brief.
+2. Wait for BE: `git fetch origin && git ls-remote origin backend/bulk-import-heuristic | grep refs/heads || echo "BE not pushed — wait"`.
+3. `git checkout origin/backend/bulk-import-heuristic -b frontend/import-page-clean` (or base off main if BE merged).
+4. `npx prisma generate`.
+5. Implement. One commit OK.
+6. Commit with `[FE]` prefix. **No Claude attribution.**
+7. **Backdate per pacing.** Today (2026-05-27) is filling up. Light days 2026-05-15 / 16 / 17 have 1 commit each. Pick around `2026-05-15T20:00:00+05:30`.
+8. Push (or commit locally for orchestrator push).
+9. Append to `.agents/status-frontend.md`.
+10. **Stop.** Skip `~/report.sh`.
 
-#### `app/(dashboard)/questions/page.tsx`
+## Hard rules
 
-- Filters and grouping currently read `q.course?.id`/`q.chapter?.id`/`q.topic?.id`. These joined fields are gone. Switch to reading the **first** taxonomy tag for backward-compatible grouping (or, if you want to honor multi-tagging, group by every `(q, tag)` cross-product — note this in the status entry).
-- Filter sidebar still posts `course_id`/`chapter_id`/`topic_id`/`exam_type` as query params; that contract is unchanged.
-
-#### `app/(dashboard)/tests/new/page.tsx`
-
-- Imports `GenerateTestPayload` from `@/lib/ui/mocks/m2m` — this stays (mock module re-exports it). No change unless typecheck flags it.
-
-### Validation
-
-- [ ] `npx tsc --noEmit` exit 0.
-- [ ] Smoke test by clicking through: question bank list → question detail → edit → bulk retag → test creator blueprint mode. (You can do this in dev — `npm run dev` — if you want, but typecheck-clean is the binding bar.)
-
-### Push
-
-- The branch is shared with origin (already pushed). After rebase you'll need a force push:
-  ```
-  git push --force-with-lease origin frontend/multitax-blueprint-paper
-  ```
-  Use `--force-with-lease`, NOT `--force` (so you don't clobber someone else's commits).
-
-### Status + report
-
-- Append to `.agents/status-frontend.md`: rebase note, files changed, commit list, force-push confirmation, PR URL (same one — `https://github.com/varenyameducation/VarenyamEducation/pull/<N>` if you know the number, otherwise the `pull/new/` URL the previous push printed).
-- Run `~/report.sh frontend "<one-line summary>"`.
-- **Stop.**
-
-### Hard rules
-
-- Single PR. The existing FE PR gets force-pushed; do not open a new one.
-- Do not touch `types/taxonomy.ts` (INT's). Do not touch `app/api/**` (BE's).
-- Do not run `--force` without `--with-lease`.
-- No Claude attribution in commits.
-- If the typecheck reveals an additional FE file that reads the removed `q.course_id`/`q.exam_type` etc. fields and it is not in the list above, FIX it in the same PR — do not leave breakage. Note any genuinely-out-of-FE-scope files in the status entry (none expected — BE has cleaned its own routes already).
+- Single PR.
+- Don't touch `app/api/**`, `types/**`, `prisma/**`, `lib/integrations/**`.
+- The 4-tier cascade dropdowns must use **live data**. No hardcoded enums. No mock fallbacks.
+- No SSE plumbing. No progress bars. Operations are now short enough that a single spinner is the right UX.
+- The user is testing this with `65-S-1_Mathematics-7.pdf` AND a standalone math image AND the old Class-8 DOCX. All three flows must work end-to-end visually.
