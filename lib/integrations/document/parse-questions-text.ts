@@ -41,8 +41,14 @@ export type ParseResult = {
   errors: ParseError[]
 }
 
-const Q_START = /^Q\s*(\d+)\s*\.?$/i
-const Q_INLINE = /^Q\s*(\d+)\s*\.\s*(.+)/i
+// Make the leading "Q" optional. Many boards (CBSE, ICSE, state) number
+// questions without the Q prefix — "7." instead of "Q7.". After this change
+// any paragraph that starts with one-or-more digits + "." is a candidate
+// question start; downstream guards (monotonic numbering, body-length-and-
+// options-cluster check in classifyBlock) reject false positives like
+// "1. All questions are compulsory".
+const Q_START = /^Q?\s*(\d+)\s*\.?$/i
+const Q_INLINE = /^Q?\s*(\d+)\s*\.\s*(.+)/i
 const SECTION = /^Section\s*[-–—]\s*([A-Z])/i
 const BONUS_HEADER = /^Bonus\s+Question/i
 const MARKS_LINE = /^\[\s*(\d+(?:\.\d+)?)\s*\]$/
@@ -130,12 +136,51 @@ type Block = {
 // Walks the paragraph stream and yields per-question text blocks. Body and
 // option lines are kept together; section headers, marks indicators, "Ans"
 // markers, and dotted answer lines are pulled out as metadata.
+//
+// With Q-prefix made optional, plain numbered lines ("1. All questions are
+// compulsory") would otherwise be mis-detected as Q1. Defenses:
+//  (a) the matched number must be monotonically increasing from the previous
+//      accepted question number (reset on Section header). For the FIRST
+//      question we only accept n ≤ 5 — paper instructions typically have
+//      "1." / "2." for the rubric but never start with "5." for content.
+//  (b) downstream classifyBlock drops blocks whose body is too short and have
+//      no options cluster (handled there).
+function shouldAcceptQuestionNumber(
+  candidate: number,
+  lastAccepted: number | null,
+): boolean {
+  if (candidate <= 0) return false
+  if (lastAccepted === null) return candidate <= 5
+  return candidate > lastAccepted
+}
+
+// Minimum joined-body-text length for the *current* block to be considered
+// real enough to anchor monotonic numbering. A block whose only "body" so
+// far is a single digit or letter is almost certainly the parser drifting
+// through a layout table — we use the pre-cur baseline instead.
+const MIN_BODY_FOR_MONOTONIC_ANCHOR = 20
+
+function joinedBodyLen(block: Block | null): number {
+  if (!block) return 0
+  return block.paragraphs.join(' ').trim().length
+}
+
 function* iterateBlocks(paragraphs: string[]): Iterable<Block> {
   let currentSection: string | null = null
   let cur: Block | null = null
+  let lastQuestionNo: number | null = null
+  // Snapshot of lastQuestionNo from BEFORE we set cur. Used to roll back
+  // when a block flushes with thin or no body — that's a false-positive
+  // question start (e.g. a lone "1." instruction marker or a layout-table
+  // cell), and we don't want it poisoning the monotonicity baseline for
+  // later candidates.
+  let lastQuestionNoBeforeCur: number | null = null
 
   function* flush(): Iterable<Block> {
     if (cur) {
+      if (joinedBodyLen(cur) < MIN_BODY_FOR_MONOTONIC_ANCHOR) {
+        lastQuestionNo = lastQuestionNoBeforeCur
+      }
       yield cur
       cur = null
     }
@@ -149,37 +194,61 @@ function* iterateBlocks(paragraphs: string[]): Iterable<Block> {
     if (sectionMatch) {
       yield* flush()
       currentSection = `Section ${sectionMatch[1].toUpperCase()}`
+      lastQuestionNo = null
       continue
     }
     if (BONUS_HEADER.test(p)) {
       yield* flush()
       currentSection = 'Bonus'
+      lastQuestionNo = null
       continue
     }
 
+    // If the open `cur` block hasn't accumulated a real body yet, its
+    // question number is unreliable — likely a lonely "1." marker or a
+    // layout-table cell. Use the pre-cur baseline for the monotonicity
+    // check so a "7." following an unreliable "1" is still rejected when
+    // there is nothing real before it in the doc.
+    const effectiveLastQNo =
+      joinedBodyLen(cur) < MIN_BODY_FOR_MONOTONIC_ANCHOR
+        ? lastQuestionNoBeforeCur
+        : lastQuestionNo
+
     const qMatch = Q_START.exec(p)
     if (qMatch) {
-      yield* flush()
-      cur = {
-        no: Number(qMatch[1]),
-        section: currentSection,
-        paragraphs: [],
-        marks: null,
-        ansMarkerSeen: false,
+      const n = Number(qMatch[1])
+      if (shouldAcceptQuestionNumber(n, effectiveLastQNo)) {
+        yield* flush()
+        cur = {
+          no: n,
+          section: currentSection,
+          paragraphs: [],
+          marks: null,
+          ansMarkerSeen: false,
+        }
+        lastQuestionNoBeforeCur = effectiveLastQNo
+        lastQuestionNo = n
+        continue
       }
-      continue
     }
     const qInline = Q_INLINE.exec(p)
     if (qInline) {
-      yield* flush()
-      cur = {
-        no: Number(qInline[1]),
-        section: currentSection,
-        paragraphs: [qInline[2]],
-        marks: null,
-        ansMarkerSeen: false,
+      const n = Number(qInline[1])
+      if (shouldAcceptQuestionNumber(n, effectiveLastQNo)) {
+        yield* flush()
+        cur = {
+          no: n,
+          section: currentSection,
+          paragraphs: [qInline[2]],
+          marks: null,
+          ansMarkerSeen: false,
+        }
+        lastQuestionNoBeforeCur = effectiveLastQNo
+        lastQuestionNo = n
+        continue
       }
-      continue
+      // Otherwise: not a real question start (likely an instruction line);
+      // fall through so it can attach to the previous question if any.
     }
 
     if (!cur) continue
@@ -198,6 +267,13 @@ function* iterateBlocks(paragraphs: string[]): Iterable<Block> {
   }
   yield* flush()
 }
+
+// Minimum body length (in chars) to accept a question that has NO options
+// cluster. Short bodies without options are almost always parser misfires
+// — instruction lines like "1. All questions are compulsory" or stray
+// section headers. Real subjective questions are routinely > 30 chars; we
+// give a generous floor of 20.
+const MIN_BODY_LEN_WITHOUT_OPTIONS = 20
 
 function classifyBlock(block: Block): ParsedQuestion | null {
   const allText = block.paragraphs.join(' ').replace(/\s+/g, ' ').trim()
@@ -218,6 +294,10 @@ function classifyBlock(block: Block): ParsedQuestion | null {
       marks: block.marks,
     }
   }
+
+  // No options cluster — only accept if the body is substantive enough to
+  // plausibly be a real question. Filters instruction-line false positives.
+  if (allText.length < MIN_BODY_LEN_WITHOUT_OPTIONS) return null
 
   return {
     kind: 'subjective',
