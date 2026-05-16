@@ -69,12 +69,26 @@ function tryParseHeaderMeta(paragraphs: string[]): ParseHeader {
   return header
 }
 
+// Maximum characters allowed in any single MCQ option. Real CBSE/ICSE/JEE
+// options never exceed this; longer is almost always Option D having
+// absorbed the next question's body because the source paper's question
+// boundary got swallowed during text extraction.
+const MAX_OPTION_CHARS = 300
+
 // Find the LAST occurrence of an (A) (B) (C) (D) options cluster in `text`.
 // Returns { startIndex, options } if a clean 4-option cluster is found, else null.
 // "Last" matters for assertion-reasoning questions where (A) / (R) labels
 // appear earlier in the body before the actual answer options.
+//
+// `currentQuestionNo`, when known, lets us bound Option D's text at the next
+// question's number marker (e.g. " 8. ") rather than running it to the end
+// of the cleaned text. Without this bound, Q7's Option D will absorb Q8/Q9
+// bodies when they were merged into Q7's block by an over-greedy
+// iterateBlocks pass (typically caused by PDF text extraction collapsing a
+// newline before "8." into a space).
 function findOptionsCluster(
   text: string,
+  currentQuestionNo?: number | null,
 ): { startIndex: number; options: { A: string; B: string; C: string; D: string } } | null {
   const cleaned = text.replace(/\s+/g, ' ')
   // Collect every (A|B|C|D) marker position.
@@ -104,12 +118,31 @@ function findOptionsCluster(
     const dM = markers.slice(markers.indexOf(cM) + 1).find((x) => x.letter === 'D')
     if (!dM) continue
 
+    // Determine Option D's end. Default: end of cleaned text. Then trim back
+    // at the first next-question-number marker (whitespace + digits + dot +
+    // whitespace, where the number is > currentQuestionNo if known). Then
+    // apply the hard 300-char cap as a fallback.
+    let dEnd = cleaned.length
+    const nextQRe = /\s(\d{1,3})\s*\.\s/g
+    nextQRe.lastIndex = dM.endIdx
+    let nq: RegExpExecArray | null
+    while ((nq = nextQRe.exec(cleaned))) {
+      const candidateNo = Number(nq[1])
+      if (currentQuestionNo == null || candidateNo > currentQuestionNo) {
+        dEnd = nq.index
+        break
+      }
+    }
+    if (dEnd - dM.endIdx > MAX_OPTION_CHARS) {
+      dEnd = dM.endIdx + MAX_OPTION_CHARS
+    }
+
     // Extract option texts: between this marker's end and the next marker's start.
     const A = cleaned.slice(aM.endIdx, bM.idx).trim().replace(/[,;]\s*$/, '')
     const B = cleaned.slice(bM.endIdx, cM.idx).trim().replace(/[,;]\s*$/, '')
     const C = cleaned.slice(cM.endIdx, dM.idx).trim().replace(/[,;]\s*$/, '')
     const D = cleaned
-      .slice(dM.endIdx)
+      .slice(dM.endIdx, dEnd)
       .trim()
       .replace(/[,;]\s*$/, '')
       // Strip trailing junk like '[1]' if the marks indicator slipped in
@@ -209,7 +242,7 @@ function* iterateBlocks(paragraphs: string[]): Iterable<Block> {
     // layout-table cell. Use the pre-cur baseline for the monotonicity
     // check so a "7." following an unreliable "1" is still rejected when
     // there is nothing real before it in the doc.
-    const effectiveLastQNo =
+    const effectiveLastQNo: number | null =
       joinedBodyLen(cur) < MIN_BODY_FOR_MONOTONIC_ANCHOR
         ? lastQuestionNoBeforeCur
         : lastQuestionNo
@@ -279,7 +312,7 @@ function classifyBlock(block: Block): ParsedQuestion | null {
   const allText = block.paragraphs.join(' ').replace(/\s+/g, ' ').trim()
   if (!allText) return null
 
-  const cluster = findOptionsCluster(allText)
+  const cluster = findOptionsCluster(allText, block.no)
   if (cluster) {
     const body = allText.slice(0, cluster.startIndex).trim().replace(/[:.\s]+$/, '')
     return {
