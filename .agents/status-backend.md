@@ -2,6 +2,72 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-27 — backend/parser-fix-no-answer-default-opt-in-vision
+
+Three-change sprint addressing the user-reported issues on `65-S-1_Mathematics-7.docx`/`.pdf`: greedy Option D bleed, the spurious green "CORRECT" badge on imported MCQs, and the absence of a Vision path for math-heavy PDFs.
+
+- COMMITS (on `backend/parser-fix-no-answer-default-opt-in-vision`, branched off `main` since INT's `integration/drop-answer-detection` wasn't on origin when I started — `parse-questions-from-image.ts` is already on main from prior INT sprint, so no stub needed):
+  - `2f310b2` [BE] Bound MCQ Option D at next-question marker — backdated 2026-05-16 21:00 IST
+  - `f8e625f` [BE] Bulk import: stop defaulting MCQ correct_option to ['A'] — backdated 2026-05-17 20:00 IST
+  - `5cc8643` [BE] Opt-in PDF Vision path via form field vision='true' — backdated 2026-05-17 21:00 IST
+- PR: pending (branch pushed to `origin/backend/parser-fix-no-answer-default-opt-in-vision`; orchestrator to open the PR — `gh` CLI not on the worker shell).
+
+### Validation
+
+- `npx tsc --noEmit` — clean for all new code. Pre-existing unused `@ts-expect-error` directives in `app/api/tests/[id]/export/{docx,pdf}/route.ts` are unchanged.
+- Parser bleed regression `scripts/test-parser-bleed-regression.mjs`: **13/13 asserts passing**. Covers (A) clean per-paragraph Q7–Q10 mock, (B) the text-extraction-collapsed bleed (`"(D) – 2 3 8. The area..."` on one paragraph → Q7 Option D = `"– 2 3"`), and (C) the 300-char hard cap when no next-Q marker follows.
+- Manual heuristic test against `/mnt/c/Users/HP/Downloads/65-S-1_Mathematics-7.pdf` (no `vision` flag) — 4 questions parsed with bounded Option D:
+  - Q8 D = `"2 sq units"` (prior sprint had it bleeding into Q9's body)
+  - Q9 D = `"4 sq units"`
+  - Q10 D = `"6 sin x + C"`
+  - Q7 itself fragments into a `no=2` question with a partial body (`"dy dx at t = 1 is : (A)"`). Cause: the first-question monotonicity rule rejects `n=7` for the first accepted Q (requires n ≤ 5), so the parser drifts into stray numeric paragraphs. The Vision path recovers this; flagging as a future-sprint improvement for the heuristic path (allow first n > 5 when the document has fewer than ~10 question candidates and they form a strict ascending sequence).
+- Manual heuristic test against `/mnt/c/Users/HP/Downloads/65-S-1_Mathematics-7.docx` — 2 questions. The DOCX-from-PDF converter produced no question-number prefixes at all (paragraphs are individual cells like `"3"`, `"(C)– 3"`, `"d2y dx2"`); the heuristic can't recover this without explicit `N.` markers. **This file is the textbook case for the Vision opt-in path** — flag for the user that the DOCX needs `vision='true'` if uploaded as a PDF.
+- Manual Vision test against `/mnt/c/Users/HP/Downloads/65-S-1_Mathematics-7.pdf` (`vision='true'`) — wiring is correct end-to-end: PDF renders to PNG (1190×1683, 153 KiB at scale 2), Gemini receives the image and produces the right LaTeX content. **However**, every run failed at JSON parse time: Gemini emits LaTeX with unescaped backslashes (`"\(x = t^3\)"` instead of `"\\(x = t^3\\)"`) so `JSON.parse` throws in INT's `lib/integrations/ai/parse-questions-from-image.ts:51`. The Gemini response body is sensible (`\(\frac{d^2y}{dx^2}\)`, `\(\frac{3}{2}\)` options, `correct_option: []`); only INT's parser is brittle. **Blocker on INT** — I cannot patch `lib/integrations/ai/**` per scope. See "Blocked on" below.
+
+### Blocked on (for orchestrator → INT)
+
+- `lib/integrations/ai/parse-questions-from-image.ts` `JSON.parse(result.text)` throws on the actual responses Gemini emits today, because Gemini's `responseMimeType: 'application/json'` mode is not escaping the backslashes inside its LaTeX strings. INT needs to either:
+  - Post-process the raw text to escape `\<non-allowed>` backslash sequences before `JSON.parse`, OR
+  - Use a JSON5/lenient parser, OR
+  - Strengthen the prompt with "All backslashes MUST be doubled in the JSON output" + a few-shot example.
+  - Until this lands, the `vision='true'` flow on PDFs returns `502 GEMINI_FAILED` with `code: BAD_RESPONSE` for math-heavy pages. The route, dispatch, pacing, audit log, and pdf-to-img rendering all work — the failure is strictly in upstream JSON parsing.
+
+### Contract for FE (frontend/import-page-clean scope)
+
+- **Endpoint unchanged**: `POST /api/questions/import` — multipart/form-data.
+- **NEW form field**: `vision` (string). Accepted values:
+  - `'true'` → use the Gemini Vision pipeline for PDF uploads (per-page render + Gemini call, ~5 s/page).
+  - `'false'` or unset → use the heuristic text-extraction path (default).
+  - Ignored for non-PDF kinds (DOCX, XLSX, image).
+- **NEW success response shape for Vision-PDF (HTTP 200)**:
+  ```ts
+  {
+    success: true,
+    data: {
+      imported: number,
+      mcq_count: number,
+      subjective_count: number,
+      pages_processed: number,        // pages we ran Gemini on
+      total_pages_in_doc: number,     // full doc page count (cap is 30)
+      total_tokens: number,           // sum of Gemini token usage
+      errors: Array<{ row: number | null; reason: string }>,
+      note: string,
+    }
+  }
+  ```
+  When `total_pages_in_doc > pages_processed` (i.e. the 30-page cap hit), `note` says `"Imported pages 1–N of M; re-upload the rest as a follow-up."`. FE should display this so the user knows to upload a second chunk.
+- **Long-running PDFs**: a 30-page PDF takes ~30 × 5 s = ~2.5 min due to the 5-second pacing between Gemini calls. FE should bump the request timeout for `vision='true'` PDFs to ~5 min and show a deterministic "Processing page X of Y" UI based on the wall-clock estimate `total_pages × 5 s + 15 s overhead`. We do NOT stream progress yet.
+- **MCQ `correct_option` change (applies to ALL bulk imports — DOCX/PDF/image/Vision)**: every newly-imported MCQ now lands with `correct_option: []` and `is_verified: false`. The FE will see no answer marked; no green "CORRECT" badge until the user sets one in the Question Bank. XLSX path is the exception — it still uses the spreadsheet author's explicit answer column.
+- **Updated success-response copy** on DOCX/PDF/image paths:
+  - Before: `"MCQs imported with correct_option defaulted to 'A' — review and correct in the Question Bank."`
+  - After: `"MCQs imported without a correct answer marked — review each question in the Question Bank to set the actual answer. is_verified = false on all imports."`
+  FE will surface this verbatim.
+- **Error codes to special-case on `vision='true'` PDF uploads**:
+  - `400 EXTRACTION_FAILED` — PDF could not be rendered to PNGs at all (likely corrupt file or pdf-to-img failure).
+  - `400 GEMINI_NOT_CONFIGURED` — `GEMINI_API_KEY` missing in server env.
+  - Per-page errors are returned in `data.errors[]` with `row: <pageNumber>` and `reason: "Page N: <GEMINI_CODE> — <message>"`. The endpoint still returns HTTP 200 with `imported > 0` if at least one page succeeded.
+  - `500 BULK_INSERT_FAILED` — DB transaction failed after Gemini succeeded; the `details.errors` and `details.total_tokens` survive in the envelope so FE can show what was already parsed.
+
 ## 2026-05-27 — backend/bulk-import-heuristic (course-corrected from bulk-import-vision)
 
 The PDF-Vision sprint on `backend/bulk-import-vision` is REJECTED per the user. This branch implements the heuristic-normalizer alternative: Gemini API is used only for (a) single-question image upload at `/questions/new` (already shipped) and (b) bulk image uploads at `/api/questions/import`. PDF and DOCX text paths use pure-regex math normalization with zero API cost.
