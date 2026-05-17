@@ -41,8 +41,13 @@ export type ParseResult = {
   errors: ParseError[]
 }
 
-const Q_START = /^Q\s*(\d+)\s*\.?$/i
-const Q_INLINE = /^Q\s*(\d+)\s*\.\s*(.+)/i
+// Make the leading "Q" optional. Many boards (CBSE, ICSE, state) number
+// questions without the Q prefix — "7." instead of "Q7.". After this change
+// any paragraph that starts with one-or-more digits + "." is a candidate
+// question start; downstream classification (options cluster, body length)
+// rejects false positives.
+const Q_START = /^Q?\s*(\d+)\s*\.?$/i
+const Q_INLINE = /^Q?\s*(\d+)\s*\.\s*(.+)/i
 const SECTION = /^Section\s*[-–—]\s*([A-Z])/i
 const BONUS_HEADER = /^Bonus\s+Question/i
 const MARKS_LINE = /^\[\s*(\d+(?:\.\d+)?)\s*\]$/
@@ -130,9 +135,28 @@ type Block = {
 // Walks the paragraph stream and yields per-question text blocks. Body and
 // option lines are kept together; section headers, marks indicators, "Ans"
 // markers, and dotted answer lines are pulled out as metadata.
+//
+// With Q-prefix made optional, plain numbered lines ("1. All questions are
+// compulsory") would otherwise be mis-detected as Q1. Defenses:
+//  (a) the matched number must be monotonically increasing from the previous
+//      accepted question number (reset on Section header). For the FIRST
+//      question we only accept n ≤ 5 — paper instructions typically have
+//      "1." / "2." for the rubric but never start with "5." for content.
+//  (b) downstream classifyBlock drops blocks whose body is too short and have
+//      no options cluster (handled in classifyBlock).
+function shouldAcceptQuestionNumber(
+  candidate: number,
+  lastAccepted: number | null,
+): boolean {
+  if (candidate <= 0) return false
+  if (lastAccepted === null) return candidate <= 5
+  return candidate > lastAccepted
+}
+
 function* iterateBlocks(paragraphs: string[]): Iterable<Block> {
   let currentSection: string | null = null
   let cur: Block | null = null
+  let lastQuestionNo: number | null = null
 
   function* flush(): Iterable<Block> {
     if (cur) {
@@ -149,37 +173,51 @@ function* iterateBlocks(paragraphs: string[]): Iterable<Block> {
     if (sectionMatch) {
       yield* flush()
       currentSection = `Section ${sectionMatch[1].toUpperCase()}`
+      lastQuestionNo = null
       continue
     }
     if (BONUS_HEADER.test(p)) {
       yield* flush()
       currentSection = 'Bonus'
+      lastQuestionNo = null
       continue
     }
 
     const qMatch = Q_START.exec(p)
     if (qMatch) {
-      yield* flush()
-      cur = {
-        no: Number(qMatch[1]),
-        section: currentSection,
-        paragraphs: [],
-        marks: null,
-        ansMarkerSeen: false,
+      const n = Number(qMatch[1])
+      if (shouldAcceptQuestionNumber(n, lastQuestionNo)) {
+        yield* flush()
+        cur = {
+          no: n,
+          section: currentSection,
+          paragraphs: [],
+          marks: null,
+          ansMarkerSeen: false,
+        }
+        lastQuestionNo = n
+        continue
       }
-      continue
+      // Non-monotonic / out-of-range — fall through and treat as body text.
     }
     const qInline = Q_INLINE.exec(p)
     if (qInline) {
-      yield* flush()
-      cur = {
-        no: Number(qInline[1]),
-        section: currentSection,
-        paragraphs: [qInline[2]],
-        marks: null,
-        ansMarkerSeen: false,
+      const n = Number(qInline[1])
+      if (shouldAcceptQuestionNumber(n, lastQuestionNo)) {
+        yield* flush()
+        cur = {
+          no: n,
+          section: currentSection,
+          paragraphs: [qInline[2]],
+          marks: null,
+          ansMarkerSeen: false,
+        }
+        lastQuestionNo = n
+        continue
       }
-      continue
+      // Otherwise: not a real question start (likely "1. All questions are
+      // compulsory" instruction). Fall through to body-line handling so the
+      // text isn't lost from a preceding question.
     }
 
     if (!cur) continue
@@ -198,6 +236,13 @@ function* iterateBlocks(paragraphs: string[]): Iterable<Block> {
   }
   yield* flush()
 }
+
+// Minimum body length (in chars) to accept a question that has NO options
+// cluster. Short bodies without options are almost always parser misfires
+// — instruction lines like "1. All questions are compulsory" or stray
+// section headers. Real subjective questions are routinely > 30 chars; we
+// give a generous floor of 20.
+const MIN_BODY_LEN_WITHOUT_OPTIONS = 20
 
 function classifyBlock(block: Block): ParsedQuestion | null {
   const allText = block.paragraphs.join(' ').replace(/\s+/g, ' ').trim()
@@ -218,6 +263,10 @@ function classifyBlock(block: Block): ParsedQuestion | null {
       marks: block.marks,
     }
   }
+
+  // No options cluster — only accept if the body is substantive enough to
+  // plausibly be a real question. Filters instruction-line false positives.
+  if (allText.length < MIN_BODY_LEN_WITHOUT_OPTIONS) return null
 
   return {
     kind: 'subjective',
