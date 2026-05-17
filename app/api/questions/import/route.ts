@@ -445,7 +445,9 @@ function buildCandidate(
       option_b: q.option_b,
       option_c: q.option_c,
       option_d: q.option_d,
-      correct_option: ['A' as const],
+      // Every bulk-import path produces correct_option: [] uniformly now
+      // that the MCQ schema accepts an empty array.
+      correct_option: [] as const,
     }
   }
   return {
