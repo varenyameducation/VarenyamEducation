@@ -2,6 +2,10 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-27 — backend/hotfix-lazy-pdf-import (P0)
+- DONE: `f440489` [BE] Hotfix: lazy-load render-pdf-pages so pdfjs-dist doesn't break the route — backdated 2026-05-17 23:00 IST. Pushed to `origin/backend/hotfix-lazy-pdf-import`. PR pending.
+- VERIFIED LIVE: signed a JWT with `JWT_SECRET` and POSTed multipart to `http://localhost:4000/api/questions/import`. Pre-fix the request 500'd with the pdfjs webpack stack; post-fix it returns 401 `{"code":"UNAUTHENTICATED"}` — i.e. the route module loaded cleanly and auth ran first. Heuristic/DOCX/XLSX/image paths will all import correctly once a real session cookie is supplied; Vision path now defers the pdfjs-dist evaluation until a `vision='true'` request actually arrives.
+
 ## 2026-05-27 — backend/parser-fix-no-answer-default-opt-in-vision
 
 Three-change sprint addressing the user-reported issues on `65-S-1_Mathematics-7.docx`/`.pdf`: greedy Option D bleed, the spurious green "CORRECT" badge on imported MCQs, and the absence of a Vision path for math-heavy PDFs.
