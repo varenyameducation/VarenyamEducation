@@ -13,12 +13,17 @@ import {
   parseQuestionsExcel,
   type ParsedRow,
 } from '@/lib/integrations/excel/parse-questions'
-import { extractDocx, extractDocxParagraphs, type DocxImage } from '@/lib/integrations/document/extract-docx'
-import { extractPdfParagraphs } from '@/lib/integrations/document/extract-pdf'
+import { extractDocx, type DocxImage } from '@/lib/integrations/document/extract-docx'
 import {
   parseQuestionsFromParagraphs,
   type ParsedQuestion,
 } from '@/lib/integrations/document/parse-questions-text'
+import { renderPdfPagesToPng } from '@/lib/integrations/document/render-pdf-pages'
+import {
+  parseQuestionsFromPageImage,
+  type PageQuestion,
+} from '@/lib/integrations/document/parse-page-image'
+import { GeminiError } from '@/lib/integrations/ai/gemini'
 import { questionCreateSchema } from '@/lib/validation/question'
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024
@@ -56,18 +61,40 @@ const documentDefaultsSchema = z.object({
 
 type ImportError = { row: number | null; reason: string }
 
-function getFileKind(file: File): 'xlsx' | 'docx' | 'pdf' | 'unknown' {
+function getFileKind(
+  file: File,
+): 'xlsx' | 'docx' | 'pdf' | 'image' | 'unknown' {
   const name = file.name.toLowerCase()
   if (name.endsWith('.xlsx')) return 'xlsx'
   if (name.endsWith('.docx')) return 'docx'
   if (name.endsWith('.pdf')) return 'pdf'
+  if (/\.(png|jpe?g|webp)$/i.test(name)) return 'image'
   // Fall back to mime detection
   const mime = (file.type || '').toLowerCase()
   if (mime.includes('spreadsheetml')) return 'xlsx'
   if (mime.includes('wordprocessingml')) return 'docx'
   if (mime === 'application/pdf') return 'pdf'
+  if (/^image\/(png|jpeg|webp)$/i.test(mime)) return 'image'
   return 'unknown'
 }
+
+function imageMimeFromFile(file: File): 'image/png' | 'image/jpeg' | 'image/webp' {
+  const declared = (file.type || '').toLowerCase()
+  if (declared === 'image/png' || declared === 'image/jpeg' || declared === 'image/webp') {
+    return declared
+  }
+  const name = file.name.toLowerCase()
+  if (name.endsWith('.png')) return 'image/png'
+  if (name.endsWith('.webp')) return 'image/webp'
+  return 'image/jpeg'
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// 12 RPM target (free tier is 15 RPM) — one Gemini call every 5 seconds.
+const GEMINI_PACING_MS = 5000
 
 export async function POST(request: NextRequest) {
   const auth = await requireAuth()
@@ -106,21 +133,28 @@ export async function POST(request: NextRequest) {
   if (kind === 'unknown') {
     return err(400, {
       code: 'INVALID_FILE_TYPE',
-      message: 'Only .xlsx, .docx, and .pdf files are accepted',
+      message:
+        'Only .xlsx, .docx, .pdf, and image files (.png, .jpg, .jpeg, .webp) are accepted',
     })
   }
 
   if (kind === 'xlsx') {
     return handleXlsxImport(request, form, file, auth)
   }
-  return handleDocumentImport(request, form, file, kind, auth)
+  if (kind === 'pdf') {
+    return handlePdfVisionImport(request, form, file, auth)
+  }
+  if (kind === 'image') {
+    return handleImageVisionImport(request, form, file, auth)
+  }
+  return handleDocumentImport(request, form, file, 'docx', auth)
 }
 
 async function handleDocumentImport(
   request: NextRequest,
   form: FormData,
   file: File,
-  kind: 'docx' | 'pdf',
+  kind: 'docx',
   auth: { user: { id: string }; payload: { role: string } },
 ) {
   // Document imports need a defaults payload (course/chapter/topic/subject)
@@ -168,18 +202,14 @@ async function handleDocumentImport(
   let docxImages: DocxImage[] = []
   try {
     const buf = Buffer.from(await file.arrayBuffer())
-    if (kind === 'docx') {
-      const full = await extractDocx(buf)
-      paragraphs = full.paragraphs
-      docxImages = full.images
-    } else {
-      paragraphs = await extractPdfParagraphs(buf)
-    }
+    const full = await extractDocx(buf)
+    paragraphs = full.paragraphs
+    docxImages = full.images
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'extraction failed'
     return err(400, {
       code: 'EXTRACTION_FAILED',
-      message: `Could not read ${kind.toUpperCase()} file: ${msg}`,
+      message: `Could not read DOCX file: ${msg}`,
     })
   }
 
@@ -336,7 +366,7 @@ async function handleDocumentImport(
     entity_type: 'question',
     meta: {
       actor_role: auth.payload.role,
-      source: kind,
+      source: 'docx',
       imported,
       mcq_count: mcqCount,
       subjective_count: subjectiveCount,
@@ -627,28 +657,18 @@ async function handleXlsxImport(
   }
 
   let imported = 0
-  if (pending.length > 0) {
-    try {
-      await prisma.$transaction(async (tx) => {
-        for (const p of pending) {
-          const created = await tx.question.create({ data: p.data })
-          await tx.questionTaxonomy.create({
-            data: { question_id: created.id, ...p.taxonomy },
-          })
-          imported += 1
-        }
-      })
-    } catch (e) {
-      if (uploadedPaths.length > 0 && supabase) {
-        await supabase.storage.from(STORAGE_BUCKET).remove(uploadedPaths).catch(() => {})
-      }
-      const message = e instanceof Error ? e.message : 'unknown error'
-      return err(500, {
-        code: 'BULK_INSERT_FAILED',
-        message: `Bulk insert failed; no rows imported (${message})`,
-        details: { errors },
-      })
+  try {
+    imported = await insertQuestionsWithTaxonomies(pending)
+  } catch (e) {
+    if (uploadedPaths.length > 0 && supabase) {
+      await supabase.storage.from(STORAGE_BUCKET).remove(uploadedPaths).catch(() => {})
     }
+    const message = e instanceof Error ? e.message : 'unknown error'
+    return err(500, {
+      code: 'BULK_INSERT_FAILED',
+      message: `Bulk insert failed; no rows imported (${message})`,
+      details: { errors },
+    })
   }
 
   await logAudit({
@@ -667,4 +687,475 @@ async function handleXlsxImport(
   })
 
   return ok({ imported, errors })
+}
+
+// ─── Vision-based imports (PDF + single image) ──────────────────────────────
+
+interface DocumentDefaults {
+  course_id: string
+  chapter_id: string
+  topic_id: string
+  subject: z.infer<typeof documentDefaultsSchema>['subject']
+  subject_id: string
+  difficulty: z.infer<typeof documentDefaultsSchema>['difficulty']
+  exam_type: z.infer<typeof documentDefaultsSchema>['exam_type']
+  marks_default: number
+}
+
+// Re-used by the PDF Vision handler and the single-image handler. Pulls the
+// course/chapter/topic/subject defaults from the multipart form, validates
+// chain integrity, and returns either a typed object or a NextResponse error
+// (which the caller short-circuits on).
+async function resolveDocumentDefaults(
+  form: FormData,
+): Promise<{ ok: true; defaults: DocumentDefaults } | { ok: false; response: ReturnType<typeof err> }> {
+  const defaultsRaw = {
+    course_id: form.get('course_id'),
+    chapter_id: form.get('chapter_id'),
+    topic_id: form.get('topic_id'),
+    subject: form.get('subject'),
+    difficulty: form.get('difficulty') ?? undefined,
+    exam_type: form.get('exam_type') ?? undefined,
+    marks_default: form.get('marks_default') ?? undefined,
+  }
+  const defaultsParsed = documentDefaultsSchema.safeParse(defaultsRaw)
+  if (!defaultsParsed.success) {
+    const issue = defaultsParsed.error.issues[0]
+    return {
+      ok: false,
+      response: err(400, {
+        code: 'INVALID_DEFAULTS',
+        message: `Missing or invalid default: ${issue.path.join('.')} — ${issue.message}`,
+      }),
+    }
+  }
+  const d = defaultsParsed.data
+  const [course, chapter, topic] = await Promise.all([
+    prisma.course.findFirst({ where: { id: d.course_id, deleted_at: null } }),
+    prisma.chapter.findFirst({
+      where: { id: d.chapter_id, deleted_at: null },
+      include: { subject: { select: { id: true, course_id: true } } },
+    }),
+    prisma.topic.findFirst({ where: { id: d.topic_id, deleted_at: null } }),
+  ])
+  if (!course) {
+    return {
+      ok: false,
+      response: err(400, { code: 'BAD_TAXONOMY', message: 'course_id not found' }),
+    }
+  }
+  if (!chapter || chapter.subject.course_id !== d.course_id) {
+    return {
+      ok: false,
+      response: err(400, {
+        code: 'BAD_TAXONOMY',
+        message: 'chapter does not belong to course',
+      }),
+    }
+  }
+  if (!topic || topic.chapter_id !== d.chapter_id) {
+    return {
+      ok: false,
+      response: err(400, {
+        code: 'BAD_TAXONOMY',
+        message: 'topic does not belong to chapter',
+      }),
+    }
+  }
+  return {
+    ok: true,
+    defaults: {
+      course_id: d.course_id,
+      chapter_id: d.chapter_id,
+      topic_id: d.topic_id,
+      subject: d.subject,
+      subject_id: chapter.subject.id,
+      difficulty: d.difficulty,
+      exam_type: d.exam_type,
+      marks_default: d.marks_default,
+    },
+  }
+}
+
+// Shared (question + junction-row) insert path used by xlsx-soon and vision
+// handlers. Wraps the whole batch in a single transaction so partial inserts
+// don't strand junction rows or vice versa.
+async function insertQuestionsWithTaxonomies(
+  pending: Array<{
+    data: Prisma.QuestionUncheckedCreateInput
+    taxonomy: {
+      course_id: string
+      subject_id: string
+      chapter_id: string
+      topic_id: string
+      exam_type: string
+    }
+  }>,
+): Promise<number> {
+  if (pending.length === 0) return 0
+  let imported = 0
+  await prisma.$transaction(async (tx) => {
+    for (const p of pending) {
+      const created = await tx.question.create({ data: p.data })
+      await tx.questionTaxonomy.create({
+        data: { question_id: created.id, ...p.taxonomy },
+      })
+      imported += 1
+    }
+  })
+  return imported
+}
+
+function buildPrismaDataFromVision(
+  q: PageQuestion,
+  defaults: DocumentDefaults,
+  userId: string,
+): Prisma.QuestionUncheckedCreateInput | null {
+  const marks = q.marks ?? defaults.marks_default
+  if (q.question_type === 'mcq') {
+    // We need 4 options to populate option_a..d. If Gemini returned fewer,
+    // drop the question (caller surfaces it as an error) so we don't insert
+    // half-built MCQs into the bank.
+    if (q.options.length < 4) return null
+    return {
+      subject: defaults.subject,
+      question_type: 'mcq',
+      difficulty: defaults.difficulty,
+      marks_correct: marks,
+      marks_negative: 0,
+      question_body: q.question_body,
+      created_by: userId,
+      option_a: q.options[0],
+      option_b: q.options[1],
+      option_c: q.options[2],
+      option_d: q.options[3],
+      correct_option: q.correct_option.length > 0 ? q.correct_option : ['A'],
+      image_urls: [],
+      tags: [],
+      is_verified: false,
+    }
+  }
+  if (q.question_type === 'numerical') {
+    return {
+      subject: defaults.subject,
+      // The numerical type requires `numerical_answer` per the validation
+      // schema; Vision doesn't extract that yet, so we fall back to
+      // subjective + a flag in the body so reviewers know to convert.
+      question_type: 'subjective',
+      difficulty: defaults.difficulty,
+      marks_correct: marks,
+      marks_negative: 0,
+      question_body: `[numerical — set answer in question bank] ${q.question_body}`,
+      created_by: userId,
+      correct_option: [],
+      image_urls: [],
+      tags: [],
+      is_verified: false,
+    }
+  }
+  return {
+    subject: defaults.subject,
+    question_type: 'subjective',
+    difficulty: defaults.difficulty,
+    marks_correct: marks,
+    marks_negative: 0,
+    question_body: q.question_body,
+    created_by: userId,
+    correct_option: [],
+    image_urls: [],
+    tags: [],
+    is_verified: false,
+  }
+}
+
+async function handlePdfVisionImport(
+  request: NextRequest,
+  form: FormData,
+  file: File,
+  auth: { user: { id: string }; payload: { role: string } },
+) {
+  const dr = await resolveDocumentDefaults(form)
+  if (!dr.ok) return dr.response
+  const defaults = dr.defaults
+
+  let rendered: Awaited<ReturnType<typeof renderPdfPagesToPng>>
+  try {
+    rendered = await renderPdfPagesToPng(Buffer.from(await file.arrayBuffer()), {
+      maxPages: 30,
+    })
+  } catch (e) {
+    return err(400, {
+      code: 'EXTRACTION_FAILED',
+      message: `Could not render PDF pages: ${e instanceof Error ? e.message : 'unknown error'}`,
+    })
+  }
+
+  const pending: Array<{
+    data: Prisma.QuestionUncheckedCreateInput
+    taxonomy: {
+      course_id: string
+      subject_id: string
+      chapter_id: string
+      topic_id: string
+      exam_type: string
+    }
+  }> = []
+  const errors: ImportError[] = rendered.errors.map((e) => ({
+    row: e.pageNumber,
+    reason: `Page ${e.pageNumber}: ${e.reason}`,
+  }))
+  let totalTokens = 0
+  let mcqCount = 0
+  let subjectiveCount = 0
+
+  for (let i = 0; i < rendered.pages.length; i++) {
+    const page = rendered.pages[i]
+    // Pace Gemini calls. Free tier is 15 RPM — we target 12 RPM (one call
+    // every 5 s) to leave burst headroom. First call has no preceding wait.
+    if (i > 0) await sleep(GEMINI_PACING_MS)
+
+    let pageResult: Awaited<ReturnType<typeof parseQuestionsFromPageImage>>
+    try {
+      pageResult = await parseQuestionsFromPageImage(page.pngBuffer, 'image/png')
+    } catch (e) {
+      if (e instanceof GeminiError && e.code === 'RATE_LIMIT') {
+        // 429 mid-import — give the quota window 15 s to recover then try
+        // exactly once more. If it still fails the page is logged and we
+        // continue with the rest of the PDF.
+        await sleep(15_000)
+        try {
+          pageResult = await parseQuestionsFromPageImage(page.pngBuffer, 'image/png')
+        } catch (retryErr) {
+          errors.push({
+            row: page.pageNumber,
+            reason: `Page ${page.pageNumber}: RATE_LIMIT retried once and still failed (${retryErr instanceof Error ? retryErr.message : 'unknown'})`,
+          })
+          continue
+        }
+      } else if (e instanceof GeminiError) {
+        errors.push({
+          row: page.pageNumber,
+          reason: `Page ${page.pageNumber}: ${e.code} — ${e.message}`,
+        })
+        continue
+      } else {
+        errors.push({
+          row: page.pageNumber,
+          reason: `Page ${page.pageNumber}: ${e instanceof Error ? e.message : 'unknown error'}`,
+        })
+        continue
+      }
+    }
+
+    totalTokens += pageResult.usage.totalTokens
+    for (const q of pageResult.questions) {
+      const data = buildPrismaDataFromVision(q, defaults, auth.user.id)
+      if (!data) {
+        errors.push({
+          row: page.pageNumber,
+          reason: `Page ${page.pageNumber}: MCQ returned ${q.options.length} options (need 4) — skipped`,
+        })
+        continue
+      }
+      const validated = questionCreateSchema.safeParse(data)
+      if (!validated.success) {
+        const issue = validated.error.issues[0]
+        errors.push({
+          row: page.pageNumber,
+          reason: `Page ${page.pageNumber}: ${issue.path.join('.') || '(question)'} — ${issue.message}`,
+        })
+        continue
+      }
+      if (data.question_type === 'mcq') mcqCount += 1
+      else subjectiveCount += 1
+      pending.push({
+        data,
+        taxonomy: {
+          course_id: defaults.course_id,
+          subject_id: defaults.subject_id,
+          chapter_id: defaults.chapter_id,
+          topic_id: defaults.topic_id,
+          exam_type: defaults.exam_type,
+        },
+      })
+    }
+  }
+
+  let imported = 0
+  try {
+    imported = await insertQuestionsWithTaxonomies(pending)
+  } catch (e) {
+    return err(500, {
+      code: 'BULK_INSERT_FAILED',
+      message: `Bulk insert failed; no rows imported (${e instanceof Error ? e.message : 'unknown'})`,
+      details: { errors, total_tokens: totalTokens },
+    })
+  }
+
+  await logAudit({
+    user_id: auth.user.id,
+    action: 'questions.bulk_import_vision',
+    entity_type: 'question',
+    meta: {
+      actor_role: auth.payload.role,
+      source: 'pdf',
+      imported,
+      mcq_count: mcqCount,
+      subjective_count: subjectiveCount,
+      pages_processed: rendered.pages.length,
+      total_pages_in_doc: rendered.totalPagesInDoc,
+      total_tokens: totalTokens,
+      failed: errors.length,
+      file_name: file.name,
+    },
+    ip_address: getClientIp(request),
+  })
+
+  return ok({
+    imported,
+    mcq_count: mcqCount,
+    subjective_count: subjectiveCount,
+    pages_processed: rendered.pages.length,
+    total_pages_in_doc: rendered.totalPagesInDoc,
+    total_tokens: totalTokens,
+    errors,
+    note:
+      rendered.totalPagesInDoc > rendered.pages.length
+        ? `Imported pages 1–${rendered.pages.length} of ${rendered.totalPagesInDoc}; re-upload the rest as a follow-up.`
+        : 'MCQs imported with correct_option defaulted to "A" unless the page marked one — review in the Question Bank.',
+  })
+}
+
+async function handleImageVisionImport(
+  request: NextRequest,
+  form: FormData,
+  file: File,
+  auth: { user: { id: string }; payload: { role: string } },
+) {
+  const dr = await resolveDocumentDefaults(form)
+  if (!dr.ok) return dr.response
+  const defaults = dr.defaults
+
+  const mimeType = imageMimeFromFile(file)
+  const buf = Buffer.from(await file.arrayBuffer())
+
+  let result: Awaited<ReturnType<typeof parseQuestionsFromPageImage>>
+  try {
+    result = await parseQuestionsFromPageImage(buf, mimeType)
+  } catch (e) {
+    if (e instanceof GeminiError) {
+      if (e.code === 'NO_KEY') {
+        return err(400, {
+          code: 'GEMINI_NOT_CONFIGURED',
+          message:
+            'Image parsing requires GEMINI_API_KEY in environment. Ask admin to configure.',
+        })
+      }
+      if (e.code === 'RATE_LIMIT') {
+        return err(429, {
+          code: 'RATE_LIMITED',
+          message:
+            'Gemini rate limit exceeded — try again in a few seconds (free tier is 15 requests/minute).',
+          details: { code: e.code, status: e.status ?? null },
+        })
+      }
+      return err(502, {
+        code: 'GEMINI_FAILED',
+        message: `Image parsing upstream failed: ${e.message}`,
+        details: { code: e.code, status: e.status ?? null },
+      })
+    }
+    return err(500, {
+      code: 'PARSE_FAILED',
+      message: `Image parsing failed: ${e instanceof Error ? e.message : 'unknown'}`,
+    })
+  }
+
+  const pending: Array<{
+    data: Prisma.QuestionUncheckedCreateInput
+    taxonomy: {
+      course_id: string
+      subject_id: string
+      chapter_id: string
+      topic_id: string
+      exam_type: string
+    }
+  }> = []
+  const errors: ImportError[] = []
+  let mcqCount = 0
+  let subjectiveCount = 0
+
+  for (const q of result.questions) {
+    const data = buildPrismaDataFromVision(q, defaults, auth.user.id)
+    if (!data) {
+      errors.push({
+        row: null,
+        reason: `MCQ returned ${q.options.length} options (need 4) — skipped`,
+      })
+      continue
+    }
+    const validated = questionCreateSchema.safeParse(data)
+    if (!validated.success) {
+      const issue = validated.error.issues[0]
+      errors.push({
+        row: null,
+        reason: `${issue.path.join('.') || '(question)'} — ${issue.message}`,
+      })
+      continue
+    }
+    if (data.question_type === 'mcq') mcqCount += 1
+    else subjectiveCount += 1
+    pending.push({
+      data,
+      taxonomy: {
+        course_id: defaults.course_id,
+        subject_id: defaults.subject_id,
+        chapter_id: defaults.chapter_id,
+        topic_id: defaults.topic_id,
+        exam_type: defaults.exam_type,
+      },
+    })
+  }
+
+  let imported = 0
+  try {
+    imported = await insertQuestionsWithTaxonomies(pending)
+  } catch (e) {
+    return err(500, {
+      code: 'BULK_INSERT_FAILED',
+      message: `Bulk insert failed; no rows imported (${e instanceof Error ? e.message : 'unknown'})`,
+      details: { errors, total_tokens: result.usage.totalTokens },
+    })
+  }
+
+  await logAudit({
+    user_id: auth.user.id,
+    action: 'questions.bulk_import_vision',
+    entity_type: 'question',
+    meta: {
+      actor_role: auth.payload.role,
+      source: 'image',
+      imported,
+      mcq_count: mcqCount,
+      subjective_count: subjectiveCount,
+      pages_processed: 1,
+      total_pages_in_doc: 1,
+      total_tokens: result.usage.totalTokens,
+      failed: errors.length,
+      file_name: file.name,
+    },
+    ip_address: getClientIp(request),
+  })
+
+  return ok({
+    imported,
+    mcq_count: mcqCount,
+    subjective_count: subjectiveCount,
+    pages_processed: 1,
+    total_pages_in_doc: 1,
+    total_tokens: result.usage.totalTokens,
+    errors,
+    note:
+      'MCQs imported with correct_option defaulted to "A" unless the image marked one — review in the Question Bank.',
+  })
 }
