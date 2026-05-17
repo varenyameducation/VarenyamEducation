@@ -8,109 +8,83 @@
 git config user.email   # must be snehachoukseyobc@gmail.com
 ```
 
-## Current task — Populate joined-name fields on taxonomy responses
+## Current task — HOTFIX #2: MCQ Zod schema rejects `correct_option: []`
 
-**Why:** PRs #22 (INT shared types) and #23 (BE m2m API) shipped `taxonomies: TaxonomyTagRow[]` on `/api/questions` responses with ID-only rows. The FE PR (`frontend/multitax-blueprint-paper`, currently in conflict with main) needs human-readable chip labels and cannot afford an extra round-trip to fetch the course/chapter/topic tree on every question render. INT is extending `TaxonomyTagRow` with optional name fields on branch `integration/joined-names-on-tag-row`; **your job is to populate those fields from the Prisma `include`**.
+**Severity: P1.** Bulk import via the Gemini Vision path (image OR `vision='true'` PDF) imports ZERO MCQ questions even when Gemini successfully extracts them. Live test against the user's calculus image:
 
-**Branch:** `backend/joined-names-on-tag-row`
-
-**Base off:** `integration/joined-names-on-tag-row` (so your code typechecks against the new interface). Rebase to `main` if INT has merged by the time you start.
-
-### Schema check
-
-- No Prisma changes. The `QuestionTaxonomy` model already has FK relations to `Course`, `Chapter?`, `Topic?`. You just need to `select` their names.
-
-### Changes — `/api/questions/route.ts`
-
-- [ ] Extend `taxonomySelect`:
-
-  ```ts
-  const taxonomySelect = {
-    id: true,
-    course_id: true,
-    chapter_id: true,
-    topic_id: true,
-    exam_type: true,
-    created_at: true,
-    course:  { select: { id: true, name: true } },
-    chapter: { select: { id: true, name: true, subject: true } },
-    topic:   { select: { id: true, name: true } },
-  } as const
-  ```
-
-- [ ] Update `TaxonomyRow` (the local type) to reflect the new shape so TS stays happy.
-
-- [ ] Update `withTaxonomies()` to flatten the nested includes into the row:
-
-  ```ts
-  function withTaxonomies<T extends { question_taxonomies: TaxonomyRow[] }>(question: T) {
-    const { question_taxonomies, ...rest } = question
-    return {
-      ...rest,
-      taxonomies: question_taxonomies.map((t) => ({
-        id: t.id,
-        course_id: t.course_id,
-        chapter_id: t.chapter_id,
-        topic_id: t.topic_id,
-        exam_type: t.exam_type,
-        created_at: t.created_at,
-        course_name: t.course?.name,
-        chapter_name: t.chapter?.name ?? null,
-        topic_name: t.topic?.name ?? null,
-        subject: t.chapter?.subject as 'Physics' | 'Chemistry' | 'Maths' | 'Biology' | undefined,
-      })),
-    }
+```json
+{
+  "success": true,
+  "data": {
+    "imported": 0,
+    "total_tokens": 1521,
+    "errors": [{ "row": 1, "reason": "Question 1: correct_option — Invalid input" }]
   }
-  ```
+}
+```
 
-  The shape returned now matches the extended `TaxonomyTagRow` from `@/types/taxonomy`. Keep the field names exactly aligned with INT's interface.
+### Root cause
 
-### Changes — `/api/questions/[id]/route.ts` (PATCH + GET if applicable)
+`lib/validation/question.ts:60` MCQ schema requires `correct_option: z.array(optionLetterSchema).length(1)` — **exactly 1 element**. The previous BE hotfix #3 (drop `correct_option: ['A']` default) made the image / Vision paths produce `correct_option: []`, which fails this schema. The DOCX text path at `app/api/questions/import/route.ts:448` was MISSED and still defaults to `['A' as const]`, which is why DOCX MCQs pass — but this is an inconsistency, not a feature.
 
-- [ ] Apply the same `taxonomySelect` + `withTaxonomies()` updates. If `withTaxonomies` is duplicated, factor it into `lib/api/questions.ts` and re-import from both routes. If it's already imported, just update the one definition.
+### Fix (two tiny edits)
 
-### Changes — `/api/questions/[id]/taxonomies/route.ts` (POST add tag)
+**Branch:** `backend/hotfix-mcq-empty-correct-option`
 
-- [ ] After insert, the route returns the new tag. Update its response to include the joined names by re-querying or by passing the include into the Prisma create.
+**Base off:** `backend/hotfix-lazy-pdf-import` (the in-flight lazy-import hotfix) so both fixes layer cleanly. If that's already merged, base off `main`.
 
-### Changes — `/api/questions/bulk/retag/route.ts`
+1. **`lib/validation/question.ts`** line 60 (and line 110 if the `questionUpdateSchema` has the same constraint):
+   ```ts
+   // BEFORE:
+   correct_option: z.array(optionLetterSchema).length(1),
+   // AFTER:
+   correct_option: z.array(optionLetterSchema).max(1).default([]),
+   ```
+   Allows `[]` (unverified imports) AND `['A']` / `['B']` etc. (user-set correct answer after review). The `multiSelectSchema` at line 70 must keep `.min(2)` — that's a different semantics.
 
-- [ ] If this route returns updated tags, include names. If it returns only counts (`{ added, removed }`), leave it alone.
+   Comment to add above the line:
+   ```ts
+   // Allow [] for bulk-imported MCQs that ship unverified — user marks the
+   // correct answer in the question bank after review. `.length(1)` would
+   // reject those rows wholesale.
+   ```
 
-### Changes — `/api/questions/[id]/taxonomies/[taxonomyId]/route.ts` (DELETE)
-
-- [ ] Probably returns `{ ok: true }` — no shape change. Skim and confirm.
-
-### What you do NOT change
-
-- `types/taxonomy.ts` is INT's. Do not edit.
-- The Zod input schema (`lib/integrations/validation/taxonomy-tag.ts`) is INT's; it must still reject the new name fields on input (server populates them on output only).
-- FE files (`lib/ui/**`, `components/**`, `app/(dashboard)/**`).
+2. **`app/api/questions/import/route.ts`** line 448 — clean up the inconsistency from the previous hotfix:
+   ```ts
+   // BEFORE:
+   correct_option: ['A' as const],
+   // AFTER:
+   correct_option: [] as const,
+   ```
+   Now every path uniformly produces `correct_option: []` for bulk MCQ imports.
 
 ### Validation
 
-- [ ] `npx prisma generate` clean.
-- [ ] `npx tsc --noEmit` clean (your worktree may not have INT's branch checked out yet — if you typecheck against current main and the new field references are flagged as unknown on `TaxonomyTagRow`, that's expected; rebase onto `integration/joined-names-on-tag-row` first or wait for it to merge).
+- [ ] `npx tsc --noEmit` clean.
+- [ ] Restart dev. Smoke-test bulk image upload at `/api/questions/import` with `/mnt/c/Users/HP/OneDrive/图片/Screenshots/Screenshot 2026-05-26 235616.png` — expect `imported: 1`, `mcq_count: 1` (previously 0). The single-question form at `/questions/new` should also still work — same schema covers it.
+- [ ] DOCX path regression: re-import the Class-8 Algebra Play DOCX — same 14-question baseline (now all MCQs with `correct_option: []` instead of `['A']`).
+- [ ] Run `scripts/test-parser-bleed-regression.mjs` if it covers MCQ validation — should still pass.
 
 ### Workflow
 
-1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, and this brief.
-2. Check if INT's `integration/joined-names-on-tag-row` has merged to main:
+1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, this brief.
+2. Check the lazy-import hotfix branch:
    ```
    git fetch origin
-   git log origin/main --oneline -5 | grep -i "joined-names" || echo "INT not merged yet — base off integration/joined-names-on-tag-row"
+   git log origin/main --oneline -3 | grep -i "lazy-pdf-import\|hotfix" || echo "not merged yet"
    ```
-   - If merged: `git checkout main && git pull && git checkout -b backend/joined-names-on-tag-row`
-   - If not: `git checkout origin/integration/joined-names-on-tag-row -b backend/joined-names-on-tag-row` (you will rebase to main once INT lands)
-3. Make changes. One commit per route file or one combined commit — your call. Use `[BE]` prefix and no Claude footer.
-4. Push. Print the `pull/new/` URL.
-5. Append entry to `.agents/status-backend.md` with branch, commit list, PR URL.
-6. Run `~/report.sh backend "<short summary>"`.
-7. **Stop.**
+   - If merged: `git checkout main && git pull && git checkout -b backend/hotfix-mcq-empty-correct-option`
+   - Else: `git checkout origin/backend/hotfix-lazy-pdf-import -b backend/hotfix-mcq-empty-correct-option`
+3. Two small edits. Single commit.
+4. Commit with `[BE]` prefix. **No Claude attribution.** Message: `[BE] Hotfix: allow correct_option: [] on MCQ imports`.
+5. **Backdate per pacing.** 2026-05-27 is busy; pick `2026-05-17T23:30:00+05:30` (one more on the 17th — should be at 6, still under cap).
+6. Push.
+7. Append a 3-line entry to `.agents/status-backend.md` — branch, commit, push URL, live smoke result.
+8. **Stop.**
 
 ### Hard rules
 
-- Do not touch `prisma/schema.prisma`. No new migration.
-- Do not edit `types/taxonomy.ts`. That is INT's.
-- Do not touch FE files.
-- The wire shape returned from `/api/questions` MUST be a superset of what shipped in #23 (additive only). No fields removed.
+- Two small surgical edits. Do NOT refactor anything else.
+- The `multiSelectSchema` at line 70 keeps `.min(2)` — that's correct for multi-select questions.
+- Schema change is additive: `.max(1).default([])` accepts everything the prior `.length(1)` accepted plus `[]`. No existing data breaks.
+- The user's production is partially broken right now — speed matters but correctness more.
