@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { geminiGenerateText, GeminiError } from './gemini'
+import { lenientJsonParse } from './json-utils'
 
 const ALLOWED_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp'] as const
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -20,6 +21,7 @@ const PROMPT = `Extract the question from this image and return a single JSON ob
 - question_type: one of 'mcq', 'numerical', 'subjective'.
 - options: if MCQ, array of 4 strings (A, B, C, D values) — each option's math also in LaTeX. If not MCQ, empty array.
 - correct_option: array — leave empty unless the image marks the correct one.
+- IMPORTANT: All backslashes in LaTeX MUST be doubled in the JSON output. Write \\(, \\frac{a}{b}, \\sqrt{x} — NOT \(, \frac{a}{b}, \sqrt{x}. Single backslashes are invalid JSON escapes.
 Output ONLY the JSON object, no prose, no markdown fences.`
 
 export async function parseQuestionFromImage(
@@ -47,11 +49,11 @@ export async function parseQuestionFromImage(
 
   let raw: unknown
   try {
-    raw = JSON.parse(result.text)
+    raw = lenientJsonParse(result.text)
   } catch {
     throw new GeminiError(
       'BAD_RESPONSE',
-      `Gemini returned non-JSON text: ${result.text.slice(0, 500)}`,
+      `JSON.parse failed even after backslash-repair: ${result.text.slice(0, 500)}`,
     )
   }
 

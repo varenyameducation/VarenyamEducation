@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { geminiGenerateText, GeminiError } from './gemini'
+import { lenientJsonParse } from './json-utils'
 
 const ALLOWED_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp'] as const
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -40,6 +41,7 @@ Rules:
 - correct_option: leave [] unless the image explicitly marks the correct one with a tick, asterisk, or "Ans:" prefix.
 - SKIP non-question content: page headers, page numbers ("Page 7 of 23"), paper codes ("65/S/1"), instructions blocks ("All questions are compulsory"), section labels by themselves ("Section A"), running watermarks. Only extract things that are actual answerable questions.
 - If the page contains zero questions, return {"questions": []}.
+- IMPORTANT: All backslashes in LaTeX MUST be doubled in the JSON output. Write \\(, \\frac{a}{b}, \\sqrt{x} — NOT \(, \frac{a}{b}, \sqrt{x}. Single backslashes are invalid JSON escapes.
 - Output ONLY the JSON object. No markdown fences, no commentary.`
 
 export async function parseQuestionsFromImage(
@@ -67,11 +69,11 @@ export async function parseQuestionsFromImage(
 
   let raw: unknown
   try {
-    raw = JSON.parse(result.text)
+    raw = lenientJsonParse(result.text)
   } catch {
     throw new GeminiError(
       'BAD_RESPONSE',
-      `Gemini returned non-JSON text: ${result.text.slice(0, 500)}`,
+      `JSON.parse failed even after backslash-repair: ${result.text.slice(0, 500)}`,
     )
   }
 
