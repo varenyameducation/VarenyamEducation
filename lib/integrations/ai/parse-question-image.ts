@@ -20,7 +20,7 @@ const PROMPT = `Extract the question from this image and return a single JSON ob
 - question_body: the question text. Convert ALL math notation to LaTeX, wrapping inline math in \\( ... \\) and display math in \\[ ... \\]. Keep prose as plain text.
 - question_type: one of 'mcq', 'numerical', 'subjective'.
 - options: if MCQ, array of 4 strings (A, B, C, D values) — each option's math also in LaTeX. If not MCQ, empty array.
-- correct_option: array — leave empty unless the image marks the correct one.
+- correct_option: ALWAYS return [] (an empty array). Do NOT try to detect or infer the correct answer from the image. Even if the image marks an answer with a tick, asterisk, or "Ans:" prefix, ignore it and return [].
 - IMPORTANT: All backslashes in LaTeX MUST be doubled in the JSON output. Write \\(, \\frac{a}{b}, \\sqrt{x} — NOT \(, \frac{a}{b}, \sqrt{x}. Single backslashes are invalid JSON escapes.
 Output ONLY the JSON object, no prose, no markdown fences.`
 
