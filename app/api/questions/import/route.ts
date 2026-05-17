@@ -313,7 +313,10 @@ async function handleDocumentImport(
           option_b: (v as { option_b: string }).option_b,
           option_c: (v as { option_c: string }).option_c,
           option_d: (v as { option_d: string }).option_d,
-          correct_option: ['A'],
+          // Per product direction: never guess the correct answer on bulk
+          // import. The user marks each MCQ's answer manually after
+          // review. is_verified stays false so the QB flags it.
+          correct_option: [],
           image_urls: urls,
           tags: [],
           is_verified: false,
@@ -395,7 +398,7 @@ async function handleDocumentImport(
     errors,
     header: parsed.header,
     note:
-      'MCQs imported with correct_option defaulted to "A" — review and correct in the Question Bank. Subjective questions imported as descriptive (answer in dashboard).',
+      'MCQs imported without a correct answer marked — review each question in the Question Bank to set the actual answer. is_verified = false on all imports.',
   })
 }
 
@@ -907,7 +910,11 @@ async function handleImageImport(
         option_b: q.options[1],
         option_c: q.options[2],
         option_d: q.options[3],
-        correct_option: q.correct_option.length > 0 ? q.correct_option : ['A'],
+        // Bulk import never guesses the correct answer; user marks it
+        // manually after review. Even if Gemini surfaced a tick-marked
+        // answer in the image (rare for blank papers), the FE shows the
+        // imported question with no green-CORRECT badge until reviewed.
+        correct_option: [],
         image_urls: [],
         tags: [],
         is_verified: false,
@@ -1004,6 +1011,6 @@ async function handleImageImport(
     total_tokens: result.usage.totalTokens,
     errors,
     note:
-      'Image-extracted questions inserted with correct_option defaulted to "A" unless the image marked one — review in the Question Bank.',
+      'MCQs imported without a correct answer marked — review each question in the Question Bank to set the actual answer. is_verified = false on all imports.',
   })
 }
