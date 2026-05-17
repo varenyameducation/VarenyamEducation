@@ -2,6 +2,53 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-27 — backend/bulk-import-vision
+- DONE: All three changes from the sprint brief landed on one branch, plus a smoke-test harness. Commits (in order):
+  - `c5df60b` [BE] Relax Q-prefix regex in parse-questions-text — Change A
+  - `e083297` [BE] Bulk import: PDF Vision path + image upload + shared insert helper — Changes B + C + xlsx-side refactor
+  - `ef0ad6b` [BE] Add scripts/test-pdf-vision-import.ts smoke harness
+- PR: pending (branch pushed to `origin/backend/bulk-import-vision`; orchestrator to open the PR — `gh` CLI is not on the worker shell).
+- BASE: branched off `main`. INT's `integration/multi-question-vision` was NOT on origin when I started, so I built the multi-question Gemini call locally as `lib/integrations/document/parse-page-image.ts`. It calls `geminiGenerateText` from INT's existing wrapper (`@/lib/integrations/ai/gemini`) so the AI-layer interface is unchanged. When INT lands their `parseQuestionsFromImage` export this file can be deleted and the route can swap to it 1-for-1 (response shape is the same: `{questions:[...], usage:{totalTokens}}` modulo the `questions` array key).
+- VALIDATION
+  - `npx prisma generate` clean.
+  - `npx tsc --noEmit` clean for all new files. The only remaining errors are the two pre-existing unused-`@ts-expect-error` directives in `app/api/tests/[id]/export/{docx,pdf}/route.ts` — not mine.
+  - **Manual test against the user's blocker file** `/mnt/c/Users/HP/Downloads/65-S-1_Mathematics-7.pdf` ran end-to-end via `npx tsx --env-file=.env.local scripts/test-pdf-vision-import.ts`. Result: page rendered to 1190×1683 PNG (153 KiB at scale 2); Gemini returned 4 MCQs in 7.7 s, ~1.9k tokens; math was in LaTeX (`\(x = t^3\)`, `\(\frac{d^2y}{dx^2}\)`, `\(\int \frac{3 \cos \sqrt{x}}{\sqrt{x}} dx\)`); all 4 options extracted per question. **The user's blocker file now imports correctly.**
+- BLOCKED ON: nothing. INT can rebase their `integration/multi-question-vision` onto this branch (or vice versa) when they land; the import paths line up.
+- STRETCH SKIPPED: SSE progress streaming. The brief tagged it as preferred but ship-the-sync-version-if-it-adds->30-min-of-scope. Implementing SSE properly (route-side `ReadableStream`, FE `EventSource` listener, the brief's event envelope) would have added meaningful scope to BOTH BE and FE — flagging as a follow-up sprint rather than slipping it in half-finished. Notes for that future sprint:
+  - Route handler returns a `Response` with `Content-Type: text/event-stream` and a `ReadableStream` whose controller emits one `data: {...}\n\n` chunk per page.
+  - Suggested event payloads: per-page `{page, total, questions_found, tokens}`; terminal `{done: true, imported, errors, total_tokens}`.
+  - FE subscribes via `new EventSource('/api/questions/import?stream=1', {withCredentials: true})`. The route should keep returning the existing JSON envelope when `?stream=1` is absent so existing FE callers still work.
+- STRETCH SKIPPED: DOCX-to-Vision fallback when the text parser yields zero questions. Did not implement — `mammoth` not in deps, `pandoc` not guaranteed on the worker shell, and the Change-A regex relaxation should cover the common non-Q-numbered DOCX case. Flag for a follow-up only if a user hits a math-heavy DOCX that the text path mishandles.
+
+## Contract for FE (frontend/import-revamp scope)
+- **Endpoint unchanged**: `POST /api/questions/import` — multipart/form-data, single `file` field, defaults posted alongside (`course_id`, `chapter_id`, `topic_id`, `subject`, `difficulty`, `exam_type`, `marks_default`).
+- **NEW accepted MIME types on `file`**: `image/png`, `image/jpeg`, `image/webp` in addition to the existing `.xlsx` / `.docx` / `.pdf`. Update the input `accept` attribute and the "Only .xlsx, .docx, and .pdf files are accepted" copy to include images. The error envelope returned for an unsupported type is now `400 INVALID_FILE_TYPE` with the message "Only .xlsx, .docx, .pdf, and image files (.png, .jpg, .jpeg, .webp) are accepted".
+- **PDF and image responses (new shape via Gemini Vision)** — HTTP 200 envelope:
+  ```ts
+  {
+    success: true,
+    data: {
+      imported: number,
+      mcq_count: number,
+      subjective_count: number,
+      pages_processed: number,        // pdf: count of rendered pages; image: 1
+      total_pages_in_doc: number,     // pdf: full page count; image: 1
+      total_tokens: number,           // cumulative Gemini token usage
+      errors: Array<{ row: number | null, reason: string }>,
+      note: string,                   // e.g. "Imported pages 1-30 of 47; ..."
+    }
+  }
+  ```
+- **DOCX and XLSX responses unchanged** — DOCX still returns `{imported, mcq_count, subjective_count, errors, header, note}`; XLSX still returns `{imported, errors}`.
+- **Long-running PDFs**: a 30-page PDF takes ~30 × 5 s = ~150 s due to the rate-limit pacing. FE should bump the request timeout for image/pdf uploads to ~5 min and show a deterministic-feeling progress UI ("Processing page X of Y") even though we don't stream — base it on a wall-clock estimate `total_pages × 5 s + 15 s overhead`. SSE progress streaming is flagged as a follow-up; the response only arrives once the whole batch is done.
+- **Error codes to special-case**:
+  - `400 INVALID_DEFAULTS` — missing or wrong course_id/chapter_id/topic_id/subject.
+  - `400 BAD_TAXONOMY` — chain mismatch (chapter not in course, topic not in chapter).
+  - `400 EXTRACTION_FAILED` — PDF could not be rendered to PNGs at all (likely corrupt file).
+  - `429 RATE_LIMITED` (image path only) — Gemini quota tripped on the single-image call. PDF path absorbs RATE_LIMIT internally by sleeping 15 s + retrying once.
+  - `500 BULK_INSERT_FAILED` — DB transaction failed after Gemini succeeded; the `details.errors` list survives so FE can show what was already parsed before the failure.
+- **Help-text copy update** in `app/(dashboard)/questions/import/page.tsx`: the current "Q1. body [marks]" example is stale post-Change-A. New copy: "1. body [marks]" or "Q1. body [marks]" — both are now accepted by the DOCX text parser.
+
 ## 2026-05-26 — backend/parse-image-route
 - DONE: New route `POST /api/questions/parse-image` — multipart upload, single `file` field, ≤ 5 MB, image/png|jpeg|webp. Calls `parseQuestionFromImage()` from `lib/integrations/ai` and maps `GeminiError` codes to envelope codes per the brief. Audit-logs `question.parse_image` on success.
 - COMMIT: `831e5a7` (backdated to 2026-05-21 18:00 IST per pacing rule; light day).
