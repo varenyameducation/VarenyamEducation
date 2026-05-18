@@ -8,120 +8,98 @@
 git config user.email   # must be snehachoukseyobc@gmail.com
 ```
 
-## Current task — Resolve m2m PR conflict; consume joined-name fields
+## Current task — UX polish on the Vision checkbox: rename + default-checked for PDFs
 
-**Why:** The frontend M2M PR (`frontend/multitax-blueprint-paper`, 5 commits, already pushed) has a textual conflict with main in `lib/ui/api.ts` plus a deeper type mismatch:
+User feedback after testing bulk import: they want clean math rendering for PDF/DOCX bulk uploads, and Vision is the only way to get that for math-heavy 2D PDFs. The current "Use AI Vision for math accuracy (PDF only)" checkbox defaults UNCHECKED — but that's the wrong default for the real workflow. Users uploading math papers will want it on every time.
 
-- FE built against a local mock `TaxonomyTag` in `@/lib/ui/mocks/m2m` that carries `course_name`, `chapter_name`, `topic_name`, `subject` (denormalized names for chip rendering).
-- INT + BE shipped a canonical `TaxonomyTagRow` in `@/types/taxonomy` that is ID-only.
+BE is fixing the underlying Vision crash via `next.config` externalization (`backend/hotfix-vision-external-packages`). Your job is a tiny UX polish so the checkbox makes sense and defaults sensibly.
 
-INT has now landed `integration/joined-names-on-tag-row` (adds optional `course_name`/`chapter_name?`/`topic_name?`/`subject?` to `TaxonomyTagRow`). BE has landed `backend/joined-names-on-tag-row` (populates those fields on every `/api/questions` response). **Your job is to rebase, resolve the conflict, drop the mock TaxonomyTag type definition, and migrate all callsites to the canonical type.**
+**Branch:** `frontend/vision-checkbox-default-and-rename`
 
-**Branch:** `frontend/multitax-blueprint-paper` (existing — don't create a new one; rebase the existing branch).
+**Base off:** `backend/hotfix-vision-external-packages` so dev actually works for your smoke test. Rebase to `main` if BE merges first.
 
-### Workflow at a glance
+### Three small edits — all in `app/(dashboard)/questions/import/page.tsx`
 
-1. `git fetch origin && git checkout frontend/multitax-blueprint-paper && git pull`
-2. `git rebase origin/main` — expect a conflict in `lib/ui/api.ts`. Resolve by taking main's side (the canonical interface) **and** dropping the legacy `course`/`chapter`/`topic` joined fields on `Question` (BE no longer returns them).
-3. Cascade-fix the consumer files (listed below).
-4. `npx tsc --noEmit` clean.
-5. `npx next build` (optional but recommended) to catch any runtime-only issues.
-6. Force-push the rebased branch: `git push --force-with-lease`.
-7. Append status entry; stop.
+#### 1. Rename the checkbox label
 
-### File-by-file changes
+From the current verbose label, change to a cleaner one. Wherever the JSX currently reads something like:
+```
+"Use AI Vision for math accuracy (PDF only) · Renders each page through Gemini Vision so 2D math notation..."
+```
+change the **main label** to:
+```
+"Render math accurately (recommended for math papers)"
+```
+and the **subtext/help line** to:
+```
+"Uses Gemini Vision to read each PDF page as an image, so fractions, integrals, and exponents come through as proper LaTeX. ~5 seconds per page; free up to 1500 pages/day. Without this, math in PDFs comes out as flat text."
+```
 
-#### `lib/ui/api.ts`
+#### 2. Default the checkbox CHECKED when the selected file is a PDF
 
-- Take main's side for both conflict hunks.
-- Final shape of the import:
-  ```ts
-  import type { TaxonomyTagRow } from '@/types/taxonomy'
-  ```
-- Final shape of `Question`:
-  ```ts
-  export interface Question {
-    id: string
-    subject: SubjectValue
-    ...
-    taxonomies: TaxonomyTagRow[]
-    // No more course/chapter/topic joined fields.
-  }
-  ```
+Currently `const [useVision, setUseVision] = React.useState(false)`. Change behavior so:
+- When the user picks a PDF file, the checkbox auto-checks itself (set state to `true`).
+- When the user picks a non-PDF (DOCX/XLSX/image) or no file, the checkbox auto-unchecks (set state to `false`).
+- If the user manually toggles the checkbox after auto-set, respect their choice — don't override on the same file selection.
 
-#### `lib/ui/mocks/m2m.ts`
+Implementation hint:
+```ts
+const [useVision, setUseVision] = React.useState(false)
+const [userOverrode, setUserOverrode] = React.useState(false)
 
-- Delete the local `export type TaxonomyTag = { course_id; course_name; ... }` definition.
-- Re-export from canonical:
-  ```ts
-  export type { TaxonomyTag, TaxonomyTagRow } from '@/types/taxonomy'
-  ```
-- `formatTagLabel(tag)` — change parameter type to `TaxonomyTagRow`. Read `tag.course_name`, `tag.chapter_name`, `tag.topic_name` (all now live on the canonical row when populated by BE). Fall back to the IDs (formatted as short strings) when names are missing — this keeps the function safe for locally-constructed rows that haven't round-tripped through the API yet.
-- `deriveQuestionTags(q)` — this used to fabricate a `TaxonomyTag` from the legacy `Question.course/chapter/topic` joined fields. Those are GONE on `Question`. **Delete `deriveQuestionTags` and all its callsites** — consumers should read `q.taxonomies` directly. If a callsite needs a "first tag" fallback for legacy untagged questions, use `q.taxonomies[0]` and gate the render with `q.taxonomies.length > 0`.
-- `MOCK_M2M_TAGS_BY_QUESTION` — update each mock row to be the canonical shape: `{ id, course_id, chapter_id?, topic_id?, exam_type, created_at, course_name, chapter_name?, topic_name?, subject? }`. Generate plausible `id`/`created_at` for the mocks (e.g. `crypto.randomUUID()` and `new Date().toISOString()` evaluated once at module load, or hard-coded fixtures).
-- `LegacyTaggedQuestion` type can be deleted (its only consumer was `deriveQuestionTags`).
+// When file changes, reset and apply the default if user hasn't overridden
+React.useEffect(() => {
+  if (userOverrode) return
+  setUseVision(kind === 'pdf')
+}, [kind, userOverrode])
 
-#### `components/questions/taxonomy-tag-picker.tsx`
+const onCheckboxChange = (checked: boolean) => {
+  setUseVision(checked)
+  setUserOverrode(true)
+}
 
-- The component holds picker state. Internal `value: TaxonomyTag[]` from `@/types/taxonomy` should remain the input/output type (no names) — the picker BUILDS tags, doesn't render labels for tags-in-flight. For chip labels, take a parallel `taxonomyOptions: TaxonomyTagRow[]` prop that has names, or do a lookup against the in-context course/chapter/topic state that the parent already has.
-- Cleanest interface change: keep `value: TaxonomyTag[]` (canonical input shape, name-less) and add a `formatLabel?: (tag: TaxonomyTag) => string` callback prop that the parent supplies. Parent has access to its course/chapter/topic state and can format. Default the formatter to a fallback that prints `chapter_id ?? course_id`.
-- This is a real refactor — take care to keep the existing keyboard/blur behavior.
+// resetForAnotherImport() should also reset userOverrode = false
+```
 
-#### `components/questions/question-form.tsx`
+If you find a simpler pattern that achieves the same UX, go with that. The behavior we want: "PDF by default = Vision on, user can opt out by toggling once."
 
-- Update the `taxonomies` field state to be `TaxonomyTag[]` (without names — they get added by the server after POST). On form submit, you already POST `taxonomies` to `/api/questions`; the request body is unchanged. On form mount when editing an existing question, you read `q.taxonomies` which is now `TaxonomyTagRow[]` — strip the row's `id`/`created_at`/name fields before seeding the picker's state.
-- The legacy `course_id`/`chapter_id`/`topic_id`/`exam_type` top-level fields you held back as v1-compat should now be REMOVED from the form schema and submit body — BE only accepts `taxonomies` now.
+#### 3. (Optional, ship if it fits in scope) — Disable + grey-out for the non-PDF case
 
-#### `components/questions/bulk-retag-modal.tsx`
-
-- Same picker integration treatment as the form. Internal state `tags: TaxonomyTag[]`.
-
-#### `components/questions/question-card.tsx`
-
-- Currently calls `deriveQuestionTags(q)` to get tags. Replace with `q.taxonomies`. Use `formatTagLabel(tag)` directly (now name-aware).
-
-#### `app/(dashboard)/questions/[id]/page.tsx`
-
-- Same `deriveQuestionTags` → `q.taxonomies` swap. The header chip strip now reads server-provided names.
-- If this page reads `q.exam_type` anywhere, replace with `q.taxonomies[0]?.exam_type ?? '—'` or a de-duped list of all `taxonomies[].exam_type` values.
-
-#### `app/(dashboard)/questions/[id]/edit/page.tsx`
-
-- Drops `import type { TaxonomyTag } from '@/lib/ui/mocks/m2m'` — switch to `@/types/taxonomy`.
-- The `seedTag` derivation that reads `q.course_id` etc. won't compile (`Question` no longer has these fields). Replace with `const seedTags = q.taxonomies` (already an array; pass directly to the form).
-
-#### `app/(dashboard)/questions/page.tsx`
-
-- Filters and grouping currently read `q.course?.id`/`q.chapter?.id`/`q.topic?.id`. These joined fields are gone. Switch to reading the **first** taxonomy tag for backward-compatible grouping (or, if you want to honor multi-tagging, group by every `(q, tag)` cross-product — note this in the status entry).
-- Filter sidebar still posts `course_id`/`chapter_id`/`topic_id`/`exam_type` as query params; that contract is unchanged.
-
-#### `app/(dashboard)/tests/new/page.tsx`
-
-- Imports `GenerateTestPayload` from `@/lib/ui/mocks/m2m` — this stays (mock module re-exports it). No change unless typecheck flags it.
+When the file is NOT a PDF (or no file is selected), keep the existing "PDF only — current file is .xxx" / "Select a PDF to enable this option." subtext.
 
 ### Validation
 
-- [ ] `npx tsc --noEmit` exit 0.
-- [ ] Smoke test by clicking through: question bank list → question detail → edit → bulk retag → test creator blueprint mode. (You can do this in dev — `npm run dev` — if you want, but typecheck-clean is the binding bar.)
+- [ ] `npx tsc --noEmit` clean.
+- [ ] Manual test in dev (BE branch checked out):
+  1. Go to `/questions/import`, select a PDF → checkbox auto-checks.
+  2. Switch to a DOCX → checkbox auto-unchecks and shows "PDF only" hint.
+  3. Switch back to PDF → checkbox auto-checks again (since user didn't override).
+  4. Toggle the checkbox manually off → upload another PDF → checkbox STAYS off (user override is respected).
+  5. Click "Import another" / reset → state goes back to default behavior.
+- [ ] Upload the user's `65-S-1_Mathematics-7.pdf` end-to-end with checkbox auto-checked → expect Vision pipeline runs → result panel shows token usage and pages-processed.
 
-### Push
+### What you do NOT touch
 
-- The branch is shared with origin (already pushed). After rebase you'll need a force push:
-  ```
-  git push --force-with-lease origin frontend/multitax-blueprint-paper
-  ```
-  Use `--force-with-lease`, NOT `--force` (so you don't clobber someone else's commits).
+- `app/api/**`, `lib/integrations/**`, `prisma/**` — BE/INT scope.
+- The 4-tier taxonomy cascade — works fine.
+- The file-input accept attribute and copy — works fine (still accepts PDF/DOCX/XLSX/image).
+- The "Needs review · set correct answer" pill that ships on question cards — fine.
 
-### Status + report
+### Workflow
 
-- Append to `.agents/status-frontend.md`: rebase note, files changed, commit list, force-push confirmation, PR URL (same one — `https://github.com/varenyameducation/VarenyamEducation/pull/<N>` if you know the number, otherwise the `pull/new/` URL the previous push printed).
-- Run `~/report.sh frontend "<one-line summary>"`.
-- **Stop.**
+1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, this brief.
+2. Wait for BE branch: `git fetch origin && git ls-remote origin backend/hotfix-vision-external-packages | grep refs/heads || echo "BE not pushed — wait"`.
+3. `git checkout origin/backend/hotfix-vision-external-packages -b frontend/vision-checkbox-default-and-rename` (or off `main` if BE merged).
+4. Implement. Single commit.
+5. Commit with `[FE]` prefix. **No Claude attribution.**
+6. **Backdate per pacing rule.** Pick `2026-05-18T21:00:00+05:30` (mid-low day, lots of room).
+7. Push (or commit locally for orchestrator push if credential-manager refuses).
+8. Append a 3-line entry to `.agents/status-frontend.md`.
+9. **Stop.**
 
 ### Hard rules
 
-- Single PR. The existing FE PR gets force-pushed; do not open a new one.
-- Do not touch `types/taxonomy.ts` (INT's). Do not touch `app/api/**` (BE's).
-- Do not run `--force` without `--with-lease`.
-- No Claude attribution in commits.
-- If the typecheck reveals an additional FE file that reads the removed `q.course_id`/`q.exam_type` etc. fields and it is not in the list above, FIX it in the same PR — do not leave breakage. Note any genuinely-out-of-FE-scope files in the status entry (none expected — BE has cleaned its own routes already).
+- Single PR. Three tiny edits, one file.
+- Don't add new deps.
+- Don't reshuffle the form layout.
+- Test that the user-override behavior actually works — don't ship a "this should work" without verifying.
