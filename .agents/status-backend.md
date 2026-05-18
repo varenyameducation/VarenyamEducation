@@ -2,6 +2,19 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-27 — backend/hotfix-vision-external-packages (P1)
+- DONE: `61db5f0` [BE] Hotfix: externalize pdfjs-dist + pdf-to-img so Vision-PDF works — backdated 2026-05-18 20:00 IST. Pushed to `origin/backend/hotfix-vision-external-packages` (based on `main`; both prior hotfixes already merged as PR #38, #41). One-line config edit: added `experimental.serverComponentsExternalPackages: ['pdf-to-img', 'pdfjs-dist']` to `next.config.mjs`. Next 14.2 uses the `experimental.*` key (promoted to top-level `serverExternalPackages` in Next 15). No code changes in route.ts or render-pdf-pages.ts — hotfix #38's lazy import stays in place as defense-in-depth.
+- VERIFIED LIVE on the dev server (which auto-restarted on next.config change): JWT-signed super_admin POST of `/mnt/c/Users/HP/Downloads/65-S-1_Mathematics-7.pdf` with `vision=true`. Curl output verbatim:
+  ```
+  HTTP 200  28.0s
+  {"success":true,"data":{"imported":4,"mcq_count":4,"subjective_count":0,"pages_processed":1,"total_pages_in_doc":1,"total_tokens":1742,"errors":[],"note":"MCQs imported without a correct answer marked — review each question in the Question Bank to set the actual answer. is_verified = false on all imports."}}
+
+  latest question.question_body:
+    \( \int \frac{3 \cos \sqrt{x}}{\sqrt{x}} dx \) is equal to :
+  hasLatex: true
+  ```
+  Pre-fix the same request 500'd in ~1.4 s with the pdfjs `Object.defineProperty called on non-object` webpack stack.
+
 ## 2026-05-27 — backend/hotfix-mcq-empty-correct-option (P1)
 - DONE: `828a927` [BE] Hotfix: allow correct_option: [] on MCQ imports — backdated 2026-05-17 23:30 IST. Pushed to `origin/backend/hotfix-mcq-empty-correct-option` (based on `origin/backend/hotfix-lazy-pdf-import`). Two tiny edits: `mcqSchema.correct_option` → `.max(1).default([])`; route.ts:448 `['A' as const]` → `[] as const`. `multiSelectSchema.min(2)` left alone.
 - VERIFIED LIVE: fresh dev server (`rm -rf .next && npm run dev`), JWT-signed super_admin POST of the user's calculus screenshot. Response now `{imported: 1, mcq_count: 1, errors: []}` — pre-fix it was `imported: 0` with `correct_option — Invalid input`.
