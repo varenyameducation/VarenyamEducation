@@ -23,6 +23,7 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
   const test = await prisma.test.findFirst({
     where: { id: params.id, deleted_at: null },
     include: {
+      course: { select: { id: true, name: true, grade: true, stream: true } },
       test_questions: {
         include: { question: true },
         orderBy: { position: 'asc' },
