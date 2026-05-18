@@ -108,14 +108,14 @@ export default function TestsListPage() {
                 <Badge variant="outline" className="uppercase">
                   {t.status}
                 </Badge>
-                <Badge variant="secondary">{t.exam_type}</Badge>
-                {t.subjects.map((s) => (
+                {t.exam_type ? <Badge variant="secondary">{t.exam_type}</Badge> : null}
+                {(t.subjects ?? []).map((s) => (
                   <Badge key={s} variant="muted">
                     {s}
                   </Badge>
                 ))}
                 <span className="ml-auto text-xs text-muted-foreground">
-                  {t.question_count} Q · {Number(t.total_marks)} marks · {t.duration_minutes}m
+                  {t.question_count ?? 0} Q · {Number(t.total_marks ?? 0)} marks · {t.duration_minutes}m
                 </span>
               </div>
               <p className="mt-2 text-xs text-muted-foreground">

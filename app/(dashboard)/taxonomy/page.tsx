@@ -2,7 +2,8 @@
 
 import * as React from 'react'
 import Link from 'next/link'
-import { Plus, BookOpen } from 'lucide-react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Plus, BookOpen, AlertCircle } from 'lucide-react'
 import {
   Card,
   CardContent,
@@ -16,22 +17,47 @@ import {
   CourseModal,
   type CourseSubmitValues,
 } from '@/components/taxonomy/course-modal'
-import { MOCK_COURSES, type CourseUI } from '@/lib/ui/mocks/taxonomy'
+import { apiGet, apiPost } from '@/lib/ui/api'
+import type { Stream } from '@/lib/ui/mocks/taxonomy'
+
+type CourseRow = {
+  id: string
+  name: string
+  grade: number
+  stream: Stream | null
+  description: string | null
+}
 
 export default function TaxonomyHomePage() {
-  const [courses, setCourses] = React.useState<CourseUI[]>(MOCK_COURSES)
+  const qc = useQueryClient()
   const [open, setOpen] = React.useState(false)
+  const [errorMsg, setErrorMsg] = React.useState<string | null>(null)
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['taxonomy', 'courses'],
+    queryFn: () => apiGet<{ items: CourseRow[] }>('/api/taxonomy/courses'),
+  })
+
+  const courses = data?.ok ? data.data.items : []
+
+  const createMutation = useMutation({
+    mutationFn: (values: CourseSubmitValues) =>
+      apiPost<CourseRow>('/api/taxonomy/courses', values),
+    onSuccess: (result) => {
+      if (result.ok) {
+        setErrorMsg(null)
+        qc.invalidateQueries({ queryKey: ['taxonomy', 'courses'] })
+      } else {
+        setErrorMsg(result.error.message)
+      }
+    },
+    onError: (e: unknown) => {
+      setErrorMsg(e instanceof Error ? e.message : 'Failed to create course')
+    },
+  })
 
   const handleCreate = (values: CourseSubmitValues) => {
-    const next: CourseUI = {
-      id: `c-${Date.now()}`,
-      name: values.name,
-      grade: values.grade,
-      stream: values.stream,
-      description: values.description,
-      chapter_count: 0,
-    }
-    setCourses((prev) => [...prev, next])
+    createMutation.mutate(values)
   }
 
   return (
@@ -49,7 +75,16 @@ export default function TaxonomyHomePage() {
         </Button>
       </div>
 
-      {courses.length === 0 ? (
+      {errorMsg && (
+        <div className="flex items-center gap-2 rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <AlertCircle className="h-3.5 w-3.5" />
+          {errorMsg}
+        </div>
+      )}
+
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Loading courses…</p>
+      ) : courses.length === 0 ? (
         <EmptyState onAdd={() => setOpen(true)} />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -72,8 +107,7 @@ export default function TaxonomyHomePage() {
                 </CardHeader>
                 <CardContent>
                   <p className="text-xs text-muted-foreground">
-                    {course.chapter_count}{' '}
-                    {course.chapter_count === 1 ? 'chapter' : 'chapters'}
+                    Open to manage chapters
                   </p>
                 </CardContent>
               </Card>
