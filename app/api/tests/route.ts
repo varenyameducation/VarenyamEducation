@@ -30,15 +30,43 @@ export async function GET(request: NextRequest) {
     ...(status ? { status } : {}),
   }
 
-  const [total, items] = await prisma.$transaction([
+  const [total, rows] = await prisma.$transaction([
     prisma.test.count({ where }),
     prisma.test.findMany({
       where,
       orderBy: { created_at: 'desc' },
       skip: (page - 1) * limit,
       take: limit,
+      include: {
+        test_questions: {
+          include: { question: { select: { subject: true, marks_correct: true } } },
+        },
+      },
     }),
   ])
+
+  const items = rows.map((t) => {
+    const tqs = t.test_questions ?? []
+    const subjectSet = new Set<string>()
+    if (t.subject) subjectSet.add(t.subject)
+    let totalMarks = 0
+    for (const tq of tqs) {
+      const subj = tq.question?.subject
+      if (subj) subjectSet.add(subj)
+      const m =
+        tq.marks_override != null
+          ? Number(tq.marks_override)
+          : Number(tq.question?.marks_correct ?? 0)
+      totalMarks += isFinite(m) ? m : 0
+    }
+    const { test_questions: _omit, ...rest } = t
+    return {
+      ...rest,
+      subjects: Array.from(subjectSet),
+      question_count: tqs.length,
+      total_marks: totalMarks,
+    }
+  })
 
   return ok(paginatedEnvelope({ items, page, limit, total }))
 }
