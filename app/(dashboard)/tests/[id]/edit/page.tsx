@@ -26,6 +26,7 @@ interface TestRecord {
   id: string
   title: string
   course_id: string
+  course?: { id: string; name: string; grade?: number; stream?: string | null } | null
   subjects?: SubjectValue[]
   subject?: SubjectValue
   exam_type: ExamTypeValue
@@ -240,6 +241,9 @@ export default function TestBuilderEditPage({
         onOpenChange={setPreviewOpen}
         meta={{
           title: meta.title,
+          course_name: testQuery.data?.ok ? (testQuery.data.data.course?.name ?? null) : null,
+          subject: meta.subjects?.[0] ?? null,
+          exam_type: meta.exam_type,
           duration_minutes: meta.duration_minutes,
           total_marks: totalMarks,
           instructions: meta.instructions,

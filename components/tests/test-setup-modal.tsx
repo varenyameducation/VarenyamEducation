@@ -3,13 +3,15 @@
 import * as React from 'react'
 import { useForm, Controller, type Resolver } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
+import { useQuery } from '@tanstack/react-query'
 import {
   testSetupSchema,
   testSetupDefaults,
   type TestSetupValues,
 } from '@/lib/validation/test'
 import { EXAM_TYPES } from '@/lib/validation/question'
-import { MOCK_COURSES, SUBJECTS } from '@/lib/ui/mocks/taxonomy'
+import { SUBJECTS } from '@/lib/ui/mocks/taxonomy'
+import { apiGet } from '@/lib/ui/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -17,6 +19,8 @@ import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
+
+type CourseOption = { id: string; name: string }
 
 export interface TestSetupModalProps {
   defaultValues?: Partial<TestSetupValues>
@@ -46,6 +50,12 @@ export function TestSetupModal({
     formState: { errors, isSubmitting },
   } = methods
 
+  const coursesQuery = useQuery({
+    queryKey: ['taxonomy', 'courses'],
+    queryFn: () => apiGet<{ items: CourseOption[] }>('/api/taxonomy/courses'),
+  })
+  const courses = coursesQuery.data?.ok ? coursesQuery.data.data.items : []
+
   return (
     <form
       onSubmit={handleSubmit(onSubmit)}
@@ -69,8 +79,14 @@ export function TestSetupModal({
         <div className="space-y-2">
           <Label htmlFor="course_id">Course</Label>
           <Select id="course_id" {...register('course_id')}>
-            <option value="">Select course…</option>
-            {MOCK_COURSES.map((c) => (
+            <option value="">
+              {coursesQuery.isLoading
+                ? 'Loading courses…'
+                : courses.length === 0
+                  ? 'No courses — create one under /taxonomy first'
+                  : 'Select course…'}
+            </option>
+            {courses.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name}
               </option>
