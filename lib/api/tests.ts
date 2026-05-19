@@ -58,18 +58,20 @@ export const listTestsQuerySchema = z.object({
 
 export type ListTestsQuery = z.infer<typeof listTestsQuerySchema>
 
-export const setTestQuestionsSchema = z
-  .array(
-    z.object({
-      question_id: z.string().uuid(),
-      position: z.number().int().min(1).max(500),
-      section_label: z.string().trim().min(1).max(50).nullish(),
-      marks_override: z.number().min(0).max(999).nullish(),
-      negative_override: z.number().min(0).max(999).nullish(),
-    }),
-  )
-  .min(1)
-  .max(500)
+export const setTestQuestionsSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        question_id: z.string().uuid(),
+        position: z.number().int().min(1).max(500),
+        section_label: z.string().trim().min(1).max(50).nullish(),
+        marks_override: z.number().min(0).max(999).nullish(),
+        negative_override: z.number().min(0).max(999).nullish(),
+      }),
+    )
+    .min(1)
+    .max(500),
+})
 
 export type SetTestQuestionsInput = z.infer<typeof setTestQuestionsSchema>
 

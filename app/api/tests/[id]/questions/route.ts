@@ -36,7 +36,7 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
   const parsed = await parseJsonBody(request, setTestQuestionsSchema)
   if (isParseFailure(parsed)) return parsed.response
 
-  const items = parsed.data
+  const items = parsed.data.items
 
   const positions = new Set<number>()
   for (const item of items) {
