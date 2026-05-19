@@ -54,7 +54,7 @@ export function TestActionBar({
       const meta_res = await apiPut(`/api/tests/${testId}`, {
         title: meta.title,
         course_id: meta.course_id,
-        subjects: meta.subjects,
+        subject: meta.subjects?.[0] ?? null,
         exam_type: meta.exam_type,
         duration_minutes: meta.duration_minutes,
         instructions: meta.instructions,
@@ -99,6 +99,11 @@ export function TestActionBar({
     setDownloading(format)
     setToast({ kind: 'idle' })
     try {
+      const save = await saveMutation.mutateAsync({ status: 'draft' })
+      if (!save.ok) {
+        setToast({ kind: 'error', message: `Save failed before download: ${save.error.message}` })
+        return
+      }
       const res = await fetch(`/api/tests/${testId}/export/${format}`, {
         credentials: 'same-origin',
       })
