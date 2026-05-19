@@ -76,6 +76,11 @@ export default function ImportQuestionsPage() {
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null)
   const [errorsExpanded, setErrorsExpanded] = React.useState(false)
   const [useVision, setUseVision] = React.useState(false)
+  // Tracks whether the user has manually toggled the Vision checkbox since
+  // the last file selection. While false, the checkbox follows the
+  // "PDF -> on, anything else -> off" default; once true, the user's choice
+  // is preserved across file changes until reset.
+  const [userOverrode, setUserOverrode] = React.useState(false)
   const fileInputRef = React.useRef<HTMLInputElement | null>(null)
 
   const [courseId, setCourseId] = React.useState('')
@@ -130,6 +135,16 @@ export default function ImportQuestionsPage() {
   // Vision opt-in only applies to PDFs; if the user switches files to a
   // non-PDF after checking the box, treat it as off for submit + UI.
   const visionActive = useVision && isPdf
+
+  // Default the Vision checkbox to ON for PDFs (the workflow Vision is
+  // designed for) and OFF for everything else. Once the user manually
+  // toggles the checkbox, `userOverrode` flips true and the auto-default
+  // stops re-applying — so a user who unchecks Vision for one PDF can
+  // upload another PDF without it flicking back on.
+  React.useEffect(() => {
+    if (userOverrode) return
+    setUseVision(isPdf)
+  }, [isPdf, userOverrode])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -187,6 +202,7 @@ export default function ImportQuestionsPage() {
     setErrorMessage(null)
     setErrorsExpanded(false)
     setUseVision(false)
+    setUserOverrode(false)
     setStatus('idle')
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
@@ -279,19 +295,22 @@ export default function ImportQuestionsPage() {
               type="checkbox"
               className="mt-0.5 h-4 w-4"
               checked={useVision}
-              onChange={(e) => setUseVision(e.target.checked)}
+              onChange={(e) => {
+                setUseVision(e.target.checked)
+                setUserOverrode(true)
+              }}
               disabled={!isPdf}
               aria-describedby="vision-help"
             />
             <span className={cn('space-y-1 text-sm', !isPdf && 'opacity-60')}>
               <span className="font-medium">
-                Use AI Vision for math accuracy (PDF only)
+                Render math accurately (recommended for math papers)
               </span>
               <span id="vision-help" className="block text-xs text-muted-foreground">
-                Renders each page through Gemini Vision so 2D math notation
-                (fractions, integrals, exponents) comes through as proper LaTeX.
-                ~5 seconds per page; uses Gemini free-tier quota. Recommended for
-                math-heavy PDFs only.
+                Uses Gemini Vision to read each PDF page as an image, so
+                fractions, integrals, and exponents come through as proper
+                LaTeX. ~5 seconds per page; free up to 1500 pages/day.
+                Without this, math in PDFs comes out as flat text.
                 {file && !isPdf && (
                   <span className="ml-1 font-medium">
                     PDF only — current file is .{kind === 'unknown' ? '?' : kind}.
