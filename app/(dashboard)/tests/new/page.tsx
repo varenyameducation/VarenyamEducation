@@ -20,11 +20,11 @@ export default function NewTestPage() {
     mutationFn: (values: TestSetupValues) =>
       apiPost<CreatedTest>('/api/tests', {
         title: values.title,
-        course_id: values.course_id,
-        subjects: values.subjects,
+        course_id: values.course_id ? values.course_id : null,
+        subject: values.subjects?.[0] ?? null,
         exam_type: values.exam_type,
         duration_minutes: values.duration_minutes,
-        instructions: values.instructions,
+        instructions: values.instructions || null,
         status: 'draft',
       }),
     onSuccess: (result) => {
