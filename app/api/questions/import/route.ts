@@ -17,7 +17,7 @@ import { extractDocxParagraphs } from '@/lib/integrations/document/extract-docx'
 import { extractPdfParagraphs } from '@/lib/integrations/document/extract-pdf'
 import {
   parseQuestionsFromParagraphs,
-  type ParsedMcq,
+  type ParsedQuestion,
 } from '@/lib/integrations/document/parse-questions-text'
 import { questionCreateSchema } from '@/lib/validation/question'
 
@@ -174,21 +174,15 @@ async function handleDocumentImport(
 
   const parsed = parseQuestionsFromParagraphs(paragraphs)
 
-  const errors: ImportError[] = [
-    ...parsed.errors.map((e) => ({
-      row: e.question_no,
-      reason: e.reason,
-    })),
-    ...parsed.skipped_non_mcq.map((s) => ({
-      row: s.question_no,
-      reason: s.reason,
-    })),
-  ]
+  const errors: ImportError[] = parsed.errors.map((e) => ({
+    row: e.question_no,
+    reason: e.reason,
+  }))
 
   if (parsed.questions.length === 0) {
     return err(400, {
       code: 'NO_QUESTIONS_FOUND',
-      message: 'No MCQ questions were parseable from the document',
+      message: 'No questions were parseable from the document',
       details: { errors, header: parsed.header },
     })
   }
@@ -198,9 +192,11 @@ async function handleDocumentImport(
     data: Prisma.QuestionUncheckedCreateInput
   }
   const pending: Pending[] = []
+  let mcqCount = 0
+  let subjectiveCount = 0
 
   for (const q of parsed.questions) {
-    const candidate = buildMcqCandidate(q, defaults)
+    const candidate = buildCandidate(q, defaults)
     const validated = questionCreateSchema.safeParse(candidate)
     if (!validated.success) {
       const issue = validated.error.issues[0]
@@ -211,31 +207,55 @@ async function handleDocumentImport(
       continue
     }
     const v = validated.data
-    if (v.question_type !== 'mcq') continue
-    pending.push({
-      questionNo: q.question_no,
-      data: {
-        course_id: v.course_id,
-        chapter_id: v.chapter_id,
-        topic_id: v.topic_id,
-        subject: v.subject,
-        question_type: 'mcq',
-        difficulty: v.difficulty,
-        exam_type: v.exam_type,
-        marks_correct: v.marks_correct,
-        marks_negative: v.marks_negative,
-        question_body: v.question_body,
-        created_by: auth.user.id,
-        option_a: v.option_a,
-        option_b: v.option_b,
-        option_c: v.option_c,
-        option_d: v.option_d,
-        correct_option: ['A'],
-        image_urls: [],
-        tags: [],
-        is_verified: false,
-      },
-    })
+    if (v.question_type === 'mcq') {
+      mcqCount += 1
+      pending.push({
+        questionNo: q.question_no,
+        data: {
+          course_id: v.course_id,
+          chapter_id: v.chapter_id,
+          topic_id: v.topic_id,
+          subject: v.subject,
+          question_type: 'mcq',
+          difficulty: v.difficulty,
+          exam_type: v.exam_type,
+          marks_correct: v.marks_correct,
+          marks_negative: v.marks_negative,
+          question_body: v.question_body,
+          created_by: auth.user.id,
+          option_a: (v as { option_a: string }).option_a,
+          option_b: (v as { option_b: string }).option_b,
+          option_c: (v as { option_c: string }).option_c,
+          option_d: (v as { option_d: string }).option_d,
+          correct_option: ['A'],
+          image_urls: [],
+          tags: [],
+          is_verified: false,
+        },
+      })
+    } else if (v.question_type === 'subjective') {
+      subjectiveCount += 1
+      pending.push({
+        questionNo: q.question_no,
+        data: {
+          course_id: v.course_id,
+          chapter_id: v.chapter_id,
+          topic_id: v.topic_id,
+          subject: v.subject,
+          question_type: 'subjective',
+          difficulty: v.difficulty,
+          exam_type: v.exam_type,
+          marks_correct: v.marks_correct,
+          marks_negative: v.marks_negative,
+          question_body: v.question_body,
+          created_by: auth.user.id,
+          correct_option: [],
+          image_urls: [],
+          tags: [],
+          is_verified: false,
+        },
+      })
+    }
   }
 
   let imported = 0
@@ -263,6 +283,8 @@ async function handleDocumentImport(
       actor_role: auth.payload.role,
       source: kind,
       imported,
+      mcq_count: mcqCount,
+      subjective_count: subjectiveCount,
       failed: errors.length,
       file_name: file.name,
       detected_topic: parsed.header.topic ?? null,
@@ -272,19 +294,21 @@ async function handleDocumentImport(
 
   return ok({
     imported,
+    mcq_count: mcqCount,
+    subjective_count: subjectiveCount,
     errors,
     header: parsed.header,
     note:
-      'All imported questions have correct_option defaulted to "A" and is_verified=false. Review & correct each in the Question Bank.',
+      'MCQs imported with correct_option defaulted to "A" — review and correct in the Question Bank. Subjective questions imported as descriptive (answer in dashboard).',
   })
 }
 
-function buildMcqCandidate(
-  q: ParsedMcq,
+function buildCandidate(
+  q: ParsedQuestion,
   defaults: z.infer<typeof documentDefaultsSchema>,
 ) {
   const marks = q.marks ?? defaults.marks_default
-  return {
+  const common = {
     course_id: defaults.course_id,
     chapter_id: defaults.chapter_id,
     topic_id: defaults.topic_id,
@@ -294,12 +318,21 @@ function buildMcqCandidate(
     marks_correct: marks,
     marks_negative: 0,
     question_body: q.question_body,
-    question_type: 'mcq' as const,
-    option_a: q.option_a,
-    option_b: q.option_b,
-    option_c: q.option_c,
-    option_d: q.option_d,
-    correct_option: ['A' as const],
+  }
+  if (q.kind === 'mcq') {
+    return {
+      ...common,
+      question_type: 'mcq' as const,
+      option_a: q.option_a,
+      option_b: q.option_b,
+      option_c: q.option_c,
+      option_d: q.option_d,
+      correct_option: ['A' as const],
+    }
+  }
+  return {
+    ...common,
+    question_type: 'subjective' as const,
   }
 }
 

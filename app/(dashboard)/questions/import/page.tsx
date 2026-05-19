@@ -18,6 +18,8 @@ interface ImportError {
 
 interface ImportResult {
   imported: number
+  mcq_count?: number
+  subjective_count?: number
   errors: ImportError[]
   note?: string
   header?: { topic?: string | null; time_minutes?: number | null; total_marks?: number | null }
@@ -160,12 +162,11 @@ export default function ImportQuestionsPage() {
       <div className="flex items-start gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
         <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <div>
-          <strong>Word/PDF</strong>: detects MCQs in the form{' '}
-          <code>Q1.</code> body <code>(A) opt (B) opt (C) opt (D) opt</code>{' '}
-          <code>[marks]</code>. Non-MCQ questions (short/long answer) are skipped — the schema only
-          supports MCQs for now. Each imported question is created with{' '}
-          <em>correct_option = "A"</em> and{' '}
-          <em>is_verified = false</em>; review and correct each in the Question Bank.
+          <strong>Word/PDF</strong>: detects all questions in the form <code>Q1.</code> body{' '}
+          <code>[marks]</code>. MCQs (with <code>(A) (B) (C) (D)</code> options) and
+          subjective questions (short/long answer, case-based, assertion-reason) all import.
+          MCQs default to <em>correct_option = "A"</em> and{' '}
+          <em>is_verified = false</em> — review each in the Question Bank to set the actual answer.
         </div>
       </div>
 
@@ -377,7 +378,11 @@ export default function ImportQuestionsPage() {
             <div className="flex items-center gap-2">
               <CheckCircle2 className="h-5 w-5 text-emerald-600" />
               <h2 className="text-lg font-semibold">
-                {result.imported} imported · {result.errors.length} failed/skipped
+                {result.imported} imported{' '}
+                {typeof result.mcq_count === 'number' && typeof result.subjective_count === 'number'
+                  ? `(${result.mcq_count} MCQ · ${result.subjective_count} subjective)`
+                  : ''}{' '}
+                · {result.errors.length} failed
               </h2>
             </div>
             {result.errors.length > 0 && (

@@ -1,18 +1,28 @@
 // Shared question parser used by both DOCX and PDF importers.
-// Input: array of paragraph strings (already split by paragraph in the
-// source-specific extractor). Output: a list of MCQ questions plus a list
-// of paragraph-level parse errors.
+// Walks a stream of paragraphs and groups them into question blocks. For
+// each block it then decides whether the block is an MCQ (the last
+// `(A) (B) (C) (D)` cluster in the text is treated as the option set) or a
+// "subjective" question (no options cluster — short/long-answer/case-based).
 
-export type ParsedMcq = {
-  question_no: number | null
-  section_label: string | null
-  question_body: string
-  option_a: string
-  option_b: string
-  option_c: string
-  option_d: string
-  marks: number | null
-}
+export type ParsedQuestion =
+  | {
+      kind: 'mcq'
+      question_no: number | null
+      section_label: string | null
+      question_body: string
+      option_a: string
+      option_b: string
+      option_c: string
+      option_d: string
+      marks: number | null
+    }
+  | {
+      kind: 'subjective'
+      question_no: number | null
+      section_label: string | null
+      question_body: string
+      marks: number | null
+    }
 
 export type ParseError = {
   question_no: number | null
@@ -27,41 +37,21 @@ export type ParseHeader = {
 
 export type ParseResult = {
   header: ParseHeader
-  questions: ParsedMcq[]
+  questions: ParsedQuestion[]
   errors: ParseError[]
-  // Questions we found that weren't MCQs (no 4 options). Reported but not imported.
-  skipped_non_mcq: { question_no: number | null; reason: string }[]
 }
 
 const Q_START = /^Q\s*(\d+)\s*\.?$/i
 const Q_INLINE = /^Q\s*(\d+)\s*\.\s*(.+)/i
 const SECTION = /^Section\s*[-–—]\s*([A-Z])/i
+const BONUS_HEADER = /^Bonus\s+Question/i
 const MARKS_LINE = /^\[\s*(\d+(?:\.\d+)?)\s*\]$/
 const ANS_MARKER = /^Ans\b/i
-const DOT_LINE = /^[.…\s]+$/
-
-function isOptionFragment(line: string): boolean {
-  return /\(\s*[A-D]\s*\)/.test(line)
-}
-
-function parseOptions(text: string): { A: string; B: string; C: string; D: string } | null {
-  const cleaned = text.replace(/\s+/g, ' ').trim()
-  const result: Record<string, string> = {}
-  const re = /\(\s*([A-D])\s*\)\s*([\s\S]*?)(?=\(\s*[A-D]\s*\)|$)/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(cleaned))) {
-    const letter = m[1].toUpperCase()
-    result[letter] = m[2].trim().replace(/[,;]\s*$/, '')
-  }
-  if (result.A && result.B && result.C && result.D) {
-    return { A: result.A, B: result.B, C: result.C, D: result.D }
-  }
-  return null
-}
+const DOT_LINE = /^[.…\s_]+$/
 
 function tryParseHeaderMeta(paragraphs: string[]): ParseHeader {
   const header: ParseHeader = {}
-  for (const raw of paragraphs.slice(0, 30)) {
+  for (const raw of paragraphs.slice(0, 40)) {
     const p = raw.replace(/\s+/g, ' ').trim()
     const topicMatch = /^Topic\s*:\s*(.+)$/i.exec(p)
     if (topicMatch && !header.topic) header.topic = topicMatch[1].trim()
@@ -73,137 +63,184 @@ function tryParseHeaderMeta(paragraphs: string[]): ParseHeader {
   return header
 }
 
-// Walks the paragraph stream and groups into per-question blocks. Each block
-// starts at a "Q<N>." marker and runs until the next question / section /
-// marks indicator. Body and option text are accumulated across paragraphs.
-export function parseQuestionsFromParagraphs(paragraphs: string[]): ParseResult {
-  const header = tryParseHeaderMeta(paragraphs)
-  const questions: ParsedMcq[] = []
-  const errors: ParseError[] = []
-  const skipped_non_mcq: { question_no: number | null; reason: string }[] = []
-
-  let currentSection: string | null = null
-  let cur: {
-    no: number | null
-    body: string[]
-    options: string[]
-    marks: number | null
-    section: string | null
-    seenAnsMarker: boolean
-  } | null = null
-
-  function finalize() {
-    if (!cur) return
-    if (cur.seenAnsMarker || cur.options.length === 0) {
-      // No options were collected — likely short/long answer. Skip.
-      skipped_non_mcq.push({
-        question_no: cur.no,
-        reason: 'Non-MCQ question (no A/B/C/D options detected) — schema only supports MCQs right now',
-      })
-      cur = null
-      return
-    }
-    const optionsText = cur.options.join(' ')
-    const opts = parseOptions(optionsText)
-    if (!opts) {
-      errors.push({
-        question_no: cur.no,
-        reason: `Could not parse 4 distinct (A)(B)(C)(D) options from: "${optionsText.slice(0, 80)}…"`,
-      })
-      cur = null
-      return
-    }
-    const body = cur.body.join(' ').replace(/\s+/g, ' ').trim()
-    if (!body) {
-      errors.push({ question_no: cur.no, reason: 'Question body was empty' })
-      cur = null
-      return
-    }
-    questions.push({
-      question_no: cur.no,
-      section_label: cur.section,
-      question_body: body,
-      option_a: opts.A,
-      option_b: opts.B,
-      option_c: opts.C,
-      option_d: opts.D,
-      marks: cur.marks,
+// Find the LAST occurrence of an (A) (B) (C) (D) options cluster in `text`.
+// Returns { startIndex, options } if a clean 4-option cluster is found, else null.
+// "Last" matters for assertion-reasoning questions where (A) / (R) labels
+// appear earlier in the body before the actual answer options.
+function findOptionsCluster(
+  text: string,
+): { startIndex: number; options: { A: string; B: string; C: string; D: string } } | null {
+  const cleaned = text.replace(/\s+/g, ' ')
+  // Collect every (A|B|C|D) marker position.
+  const markerRe = /\(\s*([A-D])\s*\)/g
+  type Marker = { letter: 'A' | 'B' | 'C' | 'D'; idx: number; endIdx: number }
+  const markers: Marker[] = []
+  let m: RegExpExecArray | null
+  while ((m = markerRe.exec(cleaned))) {
+    markers.push({
+      letter: m[1].toUpperCase() as 'A' | 'B' | 'C' | 'D',
+      idx: m.index,
+      endIdx: markerRe.lastIndex,
     })
-    cur = null
+  }
+  if (markers.length < 4) return null
+
+  // Walk from end backward looking for a sequence A→B→C→D where the markers
+  // appear in monotonically increasing letter order. Closest to end wins.
+  for (let aPos = markers.length - 4; aPos >= 0; aPos--) {
+    const aM = markers[aPos]
+    if (aM.letter !== 'A') continue
+    // Find the next B after aM
+    const bM = markers.slice(aPos + 1).find((x) => x.letter === 'B')
+    if (!bM) continue
+    const cM = markers.slice(markers.indexOf(bM) + 1).find((x) => x.letter === 'C')
+    if (!cM) continue
+    const dM = markers.slice(markers.indexOf(cM) + 1).find((x) => x.letter === 'D')
+    if (!dM) continue
+
+    // Extract option texts: between this marker's end and the next marker's start.
+    const A = cleaned.slice(aM.endIdx, bM.idx).trim().replace(/[,;]\s*$/, '')
+    const B = cleaned.slice(bM.endIdx, cM.idx).trim().replace(/[,;]\s*$/, '')
+    const C = cleaned.slice(cM.endIdx, dM.idx).trim().replace(/[,;]\s*$/, '')
+    const D = cleaned
+      .slice(dM.endIdx)
+      .trim()
+      .replace(/[,;]\s*$/, '')
+      // Strip trailing junk like '[1]' if the marks indicator slipped in
+      .replace(/\[\s*\d+(\.\d+)?\s*\]\s*$/, '')
+      .trim()
+
+    if (!A || !B || !C || !D) continue
+    // Sanity: each option text should be reasonably short — if any is > 500 chars
+    // it's probably noise (e.g. case-based body containing (A)/(B) sub-parts).
+    if (A.length > 500 || B.length > 500 || C.length > 500 || D.length > 500) continue
+    return { startIndex: aM.idx, options: { A, B, C, D } }
+  }
+  return null
+}
+
+type Block = {
+  no: number | null
+  section: string | null
+  paragraphs: string[]
+  marks: number | null
+  ansMarkerSeen: boolean
+}
+
+// Walks the paragraph stream and yields per-question text blocks. Body and
+// option lines are kept together; section headers, marks indicators, "Ans"
+// markers, and dotted answer lines are pulled out as metadata.
+function* iterateBlocks(paragraphs: string[]): Iterable<Block> {
+  let currentSection: string | null = null
+  let cur: Block | null = null
+
+  function* flush(): Iterable<Block> {
+    if (cur) {
+      yield cur
+      cur = null
+    }
   }
 
   for (const raw of paragraphs) {
     const p = raw.replace(/\s+/g, ' ').trim()
     if (!p) continue
 
-    // Section header
     const sectionMatch = SECTION.exec(p)
     if (sectionMatch) {
-      finalize()
+      yield* flush()
       currentSection = `Section ${sectionMatch[1].toUpperCase()}`
       continue
     }
+    if (BONUS_HEADER.test(p)) {
+      yield* flush()
+      currentSection = 'Bonus'
+      continue
+    }
 
-    // Question start (just "Q1." or "Q 1 .")
     const qMatch = Q_START.exec(p)
     if (qMatch) {
-      finalize()
+      yield* flush()
       cur = {
         no: Number(qMatch[1]),
-        body: [],
-        options: [],
-        marks: null,
         section: currentSection,
-        seenAnsMarker: false,
+        paragraphs: [],
+        marks: null,
+        ansMarkerSeen: false,
       }
       continue
     }
-
-    // Question inline "Q1. body text..."
     const qInline = Q_INLINE.exec(p)
     if (qInline) {
-      finalize()
+      yield* flush()
       cur = {
         no: Number(qInline[1]),
-        body: [qInline[2]],
-        options: [],
-        marks: null,
         section: currentSection,
-        seenAnsMarker: false,
+        paragraphs: [qInline[2]],
+        marks: null,
+        ansMarkerSeen: false,
       }
       continue
     }
 
-    if (!cur) continue // not inside a question yet, skip header noise
+    if (!cur) continue
 
-    // Marks line [1]
     const marksMatch = MARKS_LINE.exec(p)
     if (marksMatch) {
       cur.marks = Number(marksMatch[1])
       continue
     }
-
-    // Ans marker → mark this as a short/long answer, will be skipped
     if (ANS_MARKER.test(p)) {
-      cur.seenAnsMarker = true
+      cur.ansMarkerSeen = true
       continue
     }
-
-    // Dotted answer line — skip
     if (DOT_LINE.test(p)) continue
+    cur.paragraphs.push(p)
+  }
+  yield* flush()
+}
 
-    // Option fragment
-    if (isOptionFragment(p)) {
-      cur.options.push(p)
-      continue
-    }
+function classifyBlock(block: Block): ParsedQuestion | null {
+  const allText = block.paragraphs.join(' ').replace(/\s+/g, ' ').trim()
+  if (!allText) return null
 
-    // Otherwise — body continuation (only if we haven't seen options yet)
-    if (cur.options.length === 0 && !cur.seenAnsMarker) {
-      cur.body.push(p)
+  const cluster = findOptionsCluster(allText)
+  if (cluster) {
+    const body = allText.slice(0, cluster.startIndex).trim().replace(/[:.\s]+$/, '')
+    return {
+      kind: 'mcq',
+      question_no: block.no,
+      section_label: block.section,
+      question_body: body || allText,
+      option_a: cluster.options.A,
+      option_b: cluster.options.B,
+      option_c: cluster.options.C,
+      option_d: cluster.options.D,
+      marks: block.marks,
     }
   }
-  finalize()
 
-  return { header, questions, errors, skipped_non_mcq }
+  return {
+    kind: 'subjective',
+    question_no: block.no,
+    section_label: block.section,
+    question_body: allText,
+    marks: block.marks,
+  }
+}
+
+export function parseQuestionsFromParagraphs(paragraphs: string[]): ParseResult {
+  const header = tryParseHeaderMeta(paragraphs)
+  const questions: ParsedQuestion[] = []
+  const errors: ParseError[] = []
+
+  for (const block of iterateBlocks(paragraphs)) {
+    const q = classifyBlock(block)
+    if (!q) {
+      errors.push({ question_no: block.no, reason: 'Question had no body text' })
+      continue
+    }
+    questions.push(q)
+  }
+
+  return { header, questions, errors }
 }
