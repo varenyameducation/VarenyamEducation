@@ -6,18 +6,11 @@ import { useQuery } from '@tanstack/react-query'
 import { AlertCircle } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { ClientDate } from '@/components/ui/client-date'
 import { Select } from '@/components/ui/select'
 import { apiGet, type Paginated } from '@/lib/ui/api'
 import { TEST_STATUSES, type TestStatus } from '@/lib/validation/test'
 import { MOCK_TESTS, type TestListItem } from '@/lib/ui/mocks/tests'
-
-function fmtDateTime(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString()
-  } catch {
-    return iso
-  }
-}
 
 export default function TestsListPage() {
   const [status, setStatus] = React.useState<TestStatus | ''>('')
@@ -119,7 +112,7 @@ export default function TestsListPage() {
                 </span>
               </div>
               <p className="mt-2 text-xs text-muted-foreground">
-                Updated {fmtDateTime(t.updated_at)}
+                Updated <ClientDate iso={t.updated_at} />
               </p>
             </Link>
           ))}
