@@ -3,6 +3,7 @@
 import * as React from 'react'
 import Link from 'next/link'
 import katex from 'katex'
+import 'katex/dist/katex.min.css'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import type { Question } from '@/lib/ui/api'
@@ -16,12 +17,11 @@ const DIFFICULTY_STYLES: Record<DifficultyValue, string> = {
   advanced: 'bg-rose-100 text-rose-700 hover:bg-rose-100',
 }
 
-const LATEX_TOKEN = /\\[a-zA-Z]+|[\$\^_{}]/
+const LATEX_TOKEN = /\\[a-zA-Z]+|[\^_{}]|\$[^$]+\$/
 
-function renderInline(body: string): string {
-  if (!LATEX_TOKEN.test(body)) {
-    return escapeHtml(body)
-  }
+function renderInline(body: string | null | undefined): string {
+  if (!body) return ''
+  if (!LATEX_TOKEN.test(body)) return escapeHtml(body)
   try {
     return katex.renderToString(body, {
       throwOnError: false,
@@ -42,15 +42,21 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;')
 }
 
-function truncate(s: string, limit = 220): string {
-  return s.length > limit ? `${s.slice(0, limit)}…` : s
-}
+const OPTION_KEYS = ['option_a', 'option_b', 'option_c', 'option_d'] as const
+const OPTION_LETTERS = ['A', 'B', 'C', 'D'] as const
 
 export function QuestionCard({ q }: { q: Question }) {
-  const html = React.useMemo(() => renderInline(truncate(q.question_body)), [q.question_body])
+  const bodyHtml = React.useMemo(() => renderInline(q.question_body), [q.question_body])
+
+  const correctSet = React.useMemo(
+    () => new Set((q.correct_option ?? []).map((c) => c.toUpperCase())),
+    [q.correct_option],
+  )
+
+  const isMcq = q.question_type === 'mcq' || q.question_type === 'multi_select'
 
   return (
-    <article className="flex flex-col gap-3 rounded-md border bg-card p-4 shadow-sm transition-colors hover:bg-accent/40">
+    <article className="flex flex-col gap-3 rounded-md border bg-card p-4 shadow-sm">
       <header className="flex flex-wrap items-center gap-2">
         <Badge variant="outline" className="font-mono uppercase">
           {q.question_type.replace('_', ' ')}
@@ -66,10 +72,52 @@ export function QuestionCard({ q }: { q: Question }) {
           +{Number(q.marks_correct)} / −{Number(q.marks_negative)}
         </span>
       </header>
+
       <div
         className="text-sm text-foreground/90"
-        dangerouslySetInnerHTML={{ __html: html }}
+        dangerouslySetInnerHTML={{ __html: bodyHtml }}
       />
+
+      {isMcq && (
+        <ol className="grid gap-1.5 sm:grid-cols-2 text-sm">
+          {OPTION_KEYS.map((key, idx) => {
+            const value = q[key]
+            if (!value) return null
+            const letter = OPTION_LETTERS[idx]
+            const isCorrect = correctSet.has(letter)
+            return (
+              <li
+                key={key}
+                className={cn(
+                  'rounded-md border px-3 py-1.5',
+                  isCorrect && 'border-emerald-300 bg-emerald-50',
+                )}
+              >
+                <span className="mr-2 font-semibold">({letter})</span>
+                <span
+                  className="inline"
+                  dangerouslySetInnerHTML={{ __html: renderInline(String(value)) }}
+                />
+                {isCorrect && (
+                  <span className="ml-2 text-[10px] font-semibold uppercase text-emerald-700">
+                    correct
+                  </span>
+                )}
+              </li>
+            )
+          })}
+        </ol>
+      )}
+
+      {q.question_type === 'numerical' && q.numerical_answer != null && (
+        <p className="text-sm">
+          <span className="font-semibold">Answer:</span>{' '}
+          <code className="rounded bg-muted px-1.5 py-0.5">
+            {String(q.numerical_answer)}
+          </code>
+        </p>
+      )}
+
       <footer className="flex items-center gap-2 border-t pt-3">
         <Button asChild variant="outline" size="sm">
           <Link href={`/questions/${q.id}`}>View</Link>
@@ -77,12 +125,13 @@ export function QuestionCard({ q }: { q: Question }) {
         <Button asChild variant="outline" size="sm">
           <Link href={`/questions/${q.id}/edit`}>Edit</Link>
         </Button>
-        <Button variant="ghost" size="sm" disabled>
-          Use in Test
-        </Button>
-        {q.is_verified && (
+        {q.is_verified ? (
           <Badge variant="secondary" className="ml-auto">
             Verified
+          </Badge>
+        ) : (
+          <Badge variant="outline" className="ml-auto text-amber-700">
+            Needs review
           </Badge>
         )}
       </footer>

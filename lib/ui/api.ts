@@ -44,6 +44,9 @@ export interface Question {
   times_used: number
   created_at: string
   updated_at: string
+  course?: { id: string; name: string } | null
+  chapter?: { id: string; name: string } | null
+  topic?: { id: string; name: string } | null
 }
 
 export interface Paginated<T> {
