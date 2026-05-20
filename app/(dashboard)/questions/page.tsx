@@ -36,7 +36,7 @@ type Selection =
   | { kind: 'chapter'; courseId: string; chapterId: string }
   | { kind: 'topic'; courseId: string; chapterId: string; topicId: string }
 
-const QUESTION_FETCH_LIMIT = 500
+const QUESTION_FETCH_LIMIT = 200
 
 // Single source of truth: one /api/questions fetch with no taxonomy filters.
 // Tree counts AND the visible question list are both derived from this list,
@@ -117,9 +117,12 @@ export default function QuestionsListPage() {
       </header>
 
       {questionsQuery.data && !questionsQuery.data.ok && (
-        <div className="flex items-center gap-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          <AlertCircle className="h-4 w-4" />
-          {questionsQuery.data.error.message}
+        <div className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <strong>{questionsQuery.data.error.code}:</strong>{' '}
+            {questionsQuery.data.error.message}
+          </div>
         </div>
       )}
 
@@ -217,7 +220,15 @@ function ContentPanel({
     return (
       <div className="space-y-5">
         <ActionLandingCards />
-        <GroupedView items={visible} onSelect={onSelect} />
+        <div>
+          <div className="mb-3 flex items-baseline justify-between gap-2 border-b pb-2">
+            <h2 className="text-lg font-semibold tracking-tight">Browse imported questions</h2>
+            <span className="text-xs text-muted-foreground">
+              Pick a topic in the left tree to focus, or expand a course below
+            </span>
+          </div>
+          <GroupedView items={visible} onSelect={onSelect} />
+        </div>
       </div>
     )
   }

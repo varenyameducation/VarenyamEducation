@@ -1,7 +1,7 @@
 import { type NextRequest } from 'next/server'
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db/prisma'
-import { ok } from '@/lib/api/response'
+import { err, ok } from '@/lib/api/response'
 import { isAuthFailure, isParseFailure, parseJsonBody, requireAuth } from '@/lib/api/taxonomy'
 import { logAudit } from '@/lib/auth/audit'
 import {
@@ -29,7 +29,11 @@ export async function GET(request: NextRequest) {
     limit: url.searchParams.get('limit') ?? undefined,
   })
   if (!parsed.success) {
-    return ok(paginatedEnvelope({ items: [], page: 1, limit: 20, total: 0 }))
+    const issue = parsed.error.issues[0]
+    return err(400, {
+      code: 'INVALID_QUERY',
+      message: `${issue.path.join('.') || '(query)'}: ${issue.message}`,
+    })
   }
 
   const { page, limit, search, ...filters } = parsed.data
