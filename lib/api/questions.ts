@@ -1,7 +1,13 @@
 import { z } from 'zod'
 
 // TODO: replace once integration/question-import merges
-export const QUESTION_TYPE_VALUES = ['mcq', 'numerical', 'matrix_match', 'multi_select'] as const
+export const QUESTION_TYPE_VALUES = [
+  'mcq',
+  'numerical',
+  'matrix_match',
+  'multi_select',
+  'subjective',
+] as const
 export const DIFFICULTY_VALUES = ['easy', 'medium', 'hard', 'advanced'] as const
 export const EXAM_TYPE_VALUES = ['school', 'board', 'jee', 'neet'] as const
 export const OPTION_VALUES = ['A', 'B', 'C', 'D'] as const
@@ -70,11 +76,17 @@ const matrixCreateSchema = z.object({
   matrix_answer: matrixAnswerSchema,
 })
 
+const subjectiveCreateSchema = z.object({
+  ...baseQuestionFields,
+  question_type: z.literal('subjective'),
+})
+
 export const createQuestionSchema = z.discriminatedUnion('question_type', [
   mcqCreateSchema,
   multiSelectCreateSchema,
   numericalCreateSchema,
   matrixCreateSchema,
+  subjectiveCreateSchema,
 ])
 
 export type CreateQuestionInput = z.infer<typeof createQuestionSchema>
