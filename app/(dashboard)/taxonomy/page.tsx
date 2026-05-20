@@ -3,7 +3,14 @@
 import * as React from 'react'
 import Link from 'next/link'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, BookOpen, AlertCircle } from 'lucide-react'
+import {
+  Plus,
+  BookOpen,
+  AlertCircle,
+  MoreVertical,
+  Pencil,
+  Trash2,
+} from 'lucide-react'
 import {
   Card,
   CardContent,
@@ -14,10 +21,16 @@ import {
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
   CourseModal,
   type CourseSubmitValues,
 } from '@/components/taxonomy/course-modal'
-import { apiGet, apiPost } from '@/lib/ui/api'
+import { apiGet, apiPost, apiPut, apiDelete } from '@/lib/ui/api'
 import type { Stream } from '@/lib/ui/mocks/taxonomy'
 
 type CourseRow = {
@@ -31,14 +44,15 @@ type CourseRow = {
 export default function TaxonomyHomePage() {
   const qc = useQueryClient()
   const [open, setOpen] = React.useState(false)
+  const [editingId, setEditingId] = React.useState<string | null>(null)
   const [errorMsg, setErrorMsg] = React.useState<string | null>(null)
 
   const { data, isLoading } = useQuery({
     queryKey: ['taxonomy', 'courses'],
     queryFn: () => apiGet<{ items: CourseRow[] }>('/api/taxonomy/courses'),
   })
-
   const courses = data?.ok ? data.data.items : []
+  const editing = courses.find((c) => c.id === editingId)
 
   const createMutation = useMutation({
     mutationFn: (values: CourseSubmitValues) =>
@@ -51,13 +65,58 @@ export default function TaxonomyHomePage() {
         setErrorMsg(result.error.message)
       }
     },
-    onError: (e: unknown) => {
-      setErrorMsg(e instanceof Error ? e.message : 'Failed to create course')
+  })
+
+  const updateMutation = useMutation({
+    mutationFn: ({ id, values }: { id: string; values: CourseSubmitValues }) =>
+      apiPut<CourseRow>(`/api/taxonomy/courses/${id}`, values),
+    onSuccess: (result) => {
+      if (result.ok) {
+        setErrorMsg(null)
+        qc.invalidateQueries({ queryKey: ['taxonomy', 'courses'] })
+      } else {
+        setErrorMsg(result.error.message)
+      }
     },
   })
 
-  const handleCreate = (values: CourseSubmitValues) => {
-    createMutation.mutate(values)
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => apiDelete(`/api/taxonomy/courses/${id}`),
+    onSuccess: (result) => {
+      if (result.ok) {
+        setErrorMsg(null)
+        qc.invalidateQueries({ queryKey: ['taxonomy', 'courses'] })
+      } else {
+        setErrorMsg(result.error.message)
+      }
+    },
+  })
+
+  const openCreate = () => {
+    setEditingId(null)
+    setOpen(true)
+  }
+  const openEdit = (id: string) => {
+    setEditingId(id)
+    setOpen(true)
+  }
+  const handleSubmit = (values: CourseSubmitValues) => {
+    if (editingId) {
+      updateMutation.mutate({ id: editingId, values })
+    } else {
+      createMutation.mutate(values)
+    }
+    setEditingId(null)
+    setOpen(false)
+  }
+  const handleDelete = (id: string, name: string) => {
+    if (
+      window.confirm(
+        `Delete course "${name}"? This soft-deletes the course and all its chapters and topics.`,
+      )
+    ) {
+      deleteMutation.mutate(id)
+    }
   }
 
   return (
@@ -69,7 +128,7 @@ export default function TaxonomyHomePage() {
             Set up Courses, Chapters, and Topics. Question tagging depends on this tree.
           </p>
         </div>
-        <Button onClick={() => setOpen(true)}>
+        <Button onClick={openCreate}>
           <Plus className="mr-2 h-4 w-4" />
           Add Course
         </Button>
@@ -85,38 +144,75 @@ export default function TaxonomyHomePage() {
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading courses…</p>
       ) : courses.length === 0 ? (
-        <EmptyState onAdd={() => setOpen(true)} />
+        <EmptyState onAdd={openCreate} />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {courses.map((course) => (
-            <Link key={course.id} href={`/taxonomy/${course.id}`} className="block">
-              <Card className="h-full transition-colors hover:bg-accent/40">
-                <CardHeader className="space-y-2">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <Badge variant="secondary">Class {course.grade}</Badge>
-                    {course.stream ? (
-                      <Badge variant="outline">{course.stream}</Badge>
+            <div key={course.id} className="relative">
+              <Link href={`/taxonomy/${course.id}`} className="block">
+                <Card className="h-full transition-colors hover:bg-accent/40">
+                  <CardHeader className="space-y-2 pr-12">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <Badge variant="secondary">Class {course.grade}</Badge>
+                      {course.stream ? (
+                        <Badge variant="outline">{course.stream}</Badge>
+                      ) : null}
+                    </div>
+                    <CardTitle className="text-lg">{course.name}</CardTitle>
+                    {course.description ? (
+                      <CardDescription className="line-clamp-2">
+                        {course.description}
+                      </CardDescription>
                     ) : null}
-                  </div>
-                  <CardTitle className="text-lg">{course.name}</CardTitle>
-                  {course.description ? (
-                    <CardDescription className="line-clamp-2">
-                      {course.description}
-                    </CardDescription>
-                  ) : null}
-                </CardHeader>
-                <CardContent>
-                  <p className="text-xs text-muted-foreground">
-                    Open to manage chapters
-                  </p>
-                </CardContent>
-              </Card>
-            </Link>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-xs text-muted-foreground">
+                      Open to manage chapters
+                    </p>
+                  </CardContent>
+                </Card>
+              </Link>
+              <div className="absolute right-3 top-3">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label="Course actions"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => openEdit(course.id)}>
+                      <Pencil className="mr-2 h-4 w-4" />
+                      Edit
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => handleDelete(course.id, course.name)}
+                      className="text-destructive focus:text-destructive"
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </div>
           ))}
         </div>
       )}
 
-      <CourseModal open={open} onOpenChange={setOpen} onSubmit={handleCreate} />
+      <CourseModal
+        open={open}
+        onOpenChange={(v) => {
+          setOpen(v)
+          if (!v) setEditingId(null)
+        }}
+        initial={editing}
+        onSubmit={handleSubmit}
+      />
     </div>
   )
 }

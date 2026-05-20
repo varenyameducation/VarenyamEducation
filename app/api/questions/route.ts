@@ -52,6 +52,11 @@ export async function GET(request: NextRequest) {
       orderBy: { created_at: 'desc' },
       skip: (page - 1) * limit,
       take: limit,
+      include: {
+        course: { select: { id: true, name: true } },
+        chapter: { select: { id: true, name: true } },
+        topic: { select: { id: true, name: true } },
+      },
     }),
   ])
 
