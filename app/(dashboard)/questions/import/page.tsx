@@ -2,8 +2,8 @@
 
 import * as React from 'react'
 import Link from 'next/link'
-import { useQuery } from '@tanstack/react-query'
-import { AlertCircle, CheckCircle2, Download, FileText, Info } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertCircle, ArrowRight, CheckCircle2, Download, FileText, Info } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
@@ -44,6 +44,7 @@ function fileKind(name: string): 'xlsx' | 'docx' | 'pdf' | 'unknown' {
 }
 
 export default function ImportQuestionsPage() {
+  const qc = useQueryClient()
   const [file, setFile] = React.useState<File | null>(null)
   const [zip, setZip] = React.useState<File | null>(null)
   const [status, setStatus] = React.useState<Status>('idle')
@@ -123,6 +124,7 @@ export default function ImportQuestionsPage() {
     }
     setResult(res.data)
     setStatus('done')
+    qc.invalidateQueries({ queryKey: ['questions'] })
   }
 
   function downloadErrorCsv() {
@@ -432,12 +434,21 @@ export default function ImportQuestionsPage() {
             </div>
           )}
 
-          <p className="text-sm">
-            <Link href="/questions" className="text-primary underline-offset-2 hover:underline">
-              Go to Question Bank →
-            </Link>{' '}
-            to set the correct option on each newly-imported question.
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm">
+            <span>
+              {result.imported > 0
+                ? 'Your imported questions are now in the bank.'
+                : 'Nothing imported — check the error list.'}
+            </span>
+            {result.imported > 0 && (
+              <Button asChild size="sm">
+                <Link href={courseId ? `/questions?course=${courseId}` : '/questions'}>
+                  View in Question Bank
+                  <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
+                </Link>
+              </Button>
+            )}
+          </div>
         </section>
       )}
     </div>
