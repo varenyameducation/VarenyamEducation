@@ -8,6 +8,7 @@ import 'katex/dist/katex.min.css'
 import { AlertCircle } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { ClientDate } from '@/components/ui/client-date'
 import { Separator } from '@/components/ui/separator'
 import { apiGet, type Question } from '@/lib/ui/api'
 
@@ -96,7 +97,7 @@ export default function QuestionDetailPage({ params }: { params: { id: string } 
         <Separator />
         <p className="text-xs text-muted-foreground">
           Marks: +{Number(q.marks_correct)} / −{Number(q.marks_negative)} · Created{' '}
-          {new Date(q.created_at).toLocaleString()}
+          <ClientDate iso={q.created_at} />
         </p>
       </article>
     </div>
