@@ -5,7 +5,13 @@ import { uuidSchema } from './common'
 export const subjectSchema = z.enum(['Physics', 'Chemistry', 'Maths', 'Biology'])
 export const difficultySchema = z.enum(['easy', 'medium', 'hard', 'advanced'])
 export const examTypeSchema = z.enum(['school', 'board', 'jee', 'neet'])
-export const questionTypeSchema = z.enum(['mcq', 'numerical', 'matrix_match', 'multi_select'])
+export const questionTypeSchema = z.enum([
+  'mcq',
+  'numerical',
+  'matrix_match',
+  'multi_select',
+  'subjective',
+])
 const optionLetterSchema = z.enum(['A', 'B', 'C', 'D'])
 
 export type SubjectValue = z.infer<typeof subjectSchema>
@@ -82,11 +88,17 @@ const matrixMatchSchema = z.object({
   matrix_answer: z.record(z.string(), z.unknown()),
 })
 
+const subjectiveSchema = z.object({
+  ...commonShape,
+  question_type: z.literal('subjective'),
+})
+
 export const questionCreateSchema = z.discriminatedUnion('question_type', [
   mcqSchema,
   multiSelectSchema,
   numericalSchema,
   matrixMatchSchema,
+  subjectiveSchema,
 ])
 
 export const questionUpdateSchema = z
@@ -118,6 +130,7 @@ export const QUESTION_TYPES: { value: QuestionTypeValue; label: string }[] = [
   { value: 'multi_select', label: 'Multi-select' },
   { value: 'numerical', label: 'Numerical' },
   { value: 'matrix_match', label: 'Matrix match' },
+  { value: 'subjective', label: 'Subjective (short/long answer)' },
 ]
 
 export const DIFFICULTIES: { value: DifficultyValue; label: string }[] = [
