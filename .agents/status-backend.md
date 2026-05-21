@@ -2,6 +2,40 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-26 — backend/parse-image-route
+- DONE: New route `POST /api/questions/parse-image` — multipart upload, single `file` field, ≤ 5 MB, image/png|jpeg|webp. Calls `parseQuestionFromImage()` from `lib/integrations/ai` and maps `GeminiError` codes to envelope codes per the brief. Audit-logs `question.parse_image` on success.
+- COMMIT: `831e5a7` (backdated to 2026-05-21 18:00 IST per pacing rule; light day).
+- PR: pending (branch pushed to `origin/backend/parse-image-route`; orchestrator to open the PR — `gh` CLI not on the worker shell).
+- BASE: branched off `main`. INT's `integration/gemini-image-to-latex` was NOT on origin when I started (only local untracked files in the shared worktree). I read INT's actual interface from those files and wrote the route against it. Once INT pushes their branch, this PR either rebases on top or gets merged after INT's; either way the import paths line up:
+  - `@/lib/integrations/ai/parse-question-image` → `parseQuestionFromImage(buffer, mimeType)` returning `{ parsed, usage: { totalTokens } }`
+  - `@/lib/integrations/ai/gemini` → `GeminiError` with codes `NO_KEY | AUTH_FAIL | RATE_LIMIT | TIMEOUT | BAD_RESPONSE | NETWORK`
+- TYPECHECK: `npx tsc --noEmit` clean for the new route. Two pre-existing unused-`@ts-expect-error` warnings in `app/api/tests/[id]/export/{docx,pdf}/route.ts` are NOT mine.
+- BLOCKED ON: nothing for me; merge order is INT first, then me, so the imports resolve on `main`.
+
+## Contract summary for FE
+- Endpoint: `POST /api/questions/parse-image`. Auth: any logged-in user (same cookie flow as other question routes).
+- Request: `multipart/form-data` with one field `file`. Must be PNG / JPEG / WebP, ≤ 5 MB.
+- Success (HTTP 200) — JSON envelope `{ success: true, data: { … } }` with `data`:
+  ```ts
+  {
+    question_body: string,                        // LaTeX-wrapped math, plain prose elsewhere
+    question_type: 'mcq' | 'numerical' | 'subjective',
+    options: string[],                            // length 4 if mcq, else []
+    correct_option: ('A'|'B'|'C'|'D')[],          // usually [] unless the image marks one
+    usage: { total_tokens: number }
+  }
+  ```
+- Error envelope `{ success: false, error: { code, message, details? } }`. Codes the FE should special-case:
+  - `400 INVALID_CONTENT_TYPE` — wrong content-type header.
+  - `400 INVALID_FORM` — multipart parse failed.
+  - `400 FILE_REQUIRED` / `400 FILE_EMPTY` / `400 FILE_TOO_LARGE` — show a per-input validation message.
+  - `400 INVALID_FILE_TYPE` — show "PNG, JPEG, or WebP only".
+  - `400 GEMINI_NOT_CONFIGURED` — show admin-config message verbatim from `error.message`.
+  - `429 RATE_LIMITED` — show "try again in a few seconds"; `details.status` may be 429.
+  - `500 PARSE_FAILED` — show "couldn't read this image, try a clearer one"; `details.raw` has Gemini's raw text for debugging (don't display).
+  - `502 GEMINI_FAILED` — show "upstream failed, try again"; `details.code` is the GeminiError code (`AUTH_FAIL` / `TIMEOUT` / `BAD_RESPONSE` / `NETWORK`) for the debug panel.
+- No retries on the route side — free-tier quota is 15 req/min; FE should debounce the upload button instead of retrying on `429`.
+
 ## 2026-05-26 — backend/subject-tier
 - DONE: Subject is now its own entity; taxonomy is the strict 4-tier hierarchy `Course → Subject → Chapter → Topic`. Branch is 4 commits ahead of `main`:
   - `76adf40` [BE] Subject model + chapter restructure + backfill migration
