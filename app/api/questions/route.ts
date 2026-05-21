@@ -9,29 +9,10 @@ import {
   getClientIp,
   listQuerySchema,
   paginatedEnvelope,
+  taxonomyRowSelect,
+  withTaxonomies,
   type TaxonomyTag,
 } from '@/lib/api/questions'
-
-type TaxonomyRow = {
-  id: string
-  course_id: string
-  chapter_id: string | null
-  topic_id: string | null
-  exam_type: string
-}
-
-const taxonomySelect = {
-  id: true,
-  course_id: true,
-  chapter_id: true,
-  topic_id: true,
-  exam_type: true,
-} as const
-
-function withTaxonomies<T extends { question_taxonomies: TaxonomyRow[] }>(question: T) {
-  const { question_taxonomies, ...rest } = question
-  return { ...rest, taxonomies: question_taxonomies }
-}
 
 export async function GET(request: NextRequest) {
   const auth = await requireAuth()
@@ -87,7 +68,7 @@ export async function GET(request: NextRequest) {
       skip: (page - 1) * limit,
       take: limit,
       include: {
-        question_taxonomies: { select: taxonomySelect },
+        question_taxonomies: { select: taxonomyRowSelect },
       },
     }),
   ])
@@ -158,7 +139,7 @@ export async function POST(request: NextRequest) {
     }
     const withTax = await tx.question.findUnique({
       where: { id: question.id },
-      include: { question_taxonomies: { select: taxonomySelect } },
+      include: { question_taxonomies: { select: taxonomyRowSelect } },
     })
     return withTax!
   })
