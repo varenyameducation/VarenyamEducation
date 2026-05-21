@@ -2,6 +2,36 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-26 19:30 — integration/gemini-image-to-latex
+- DONE: Gemini Vision integration helper for image-to-LaTeX question parsing.
+  - `lib/integrations/ai/gemini.ts` — plain `fetch` wrapper around the Google Generative Language v1beta `generateContent` REST endpoint. No SDK dependency. `AbortController` timeout (default 30s). Typed `GeminiError` with codes `NO_KEY | AUTH_FAIL | RATE_LIMIT | TIMEOUT | BAD_RESPONSE | NETWORK`. Reads `process.env.GEMINI_API_KEY` at call time (never logged, never persisted). Default model `gemini-2.5-flash`, default temperature `0.1`. Inline image parts are sent as `inline_data: { mime_type, data: <base64> }`.
+  - `lib/integrations/ai/parse-question-image.ts` — uses the wrapper with the orchestrator-verified prompt. mime-type allow-list (`image/png` | `image/jpeg` | `image/webp`) + 5 MiB size cap, both enforced before the network call. Output is `JSON.parse`d then validated against `parsedQuestionImageSchema` (Zod). Zod failure surfaces as `GeminiError('BAD_RESPONSE')` with the first 500 chars of raw text — actionable when Gemini hallucinates. MCQ option-count mismatch is a `console.warn`, not a throw, so the user can still review/edit in the form.
+  - `lib/integrations/ai/index.ts` — barrel re-export of the two public functions, `GeminiError`, the Zod schema, and the public types.
+  - `.env.example` — added `GEMINI_API_KEY=` block at the bottom with the AI Studio URL and the free-tier note.
+  - `scripts/test-gemini-image.mjs` — wire smoke test (run with `npx tsx scripts/test-gemini-image.mjs [path]`). Verified locally against the real key: logo PNG round-trips as `GeminiError('BAD_RESPONSE')` with raw `{ question_body: "", question_type: "subjective", ... }` — i.e. auth, transport, and JSON shape are all healthy; the logo just isn't a question, so Zod rejects the empty `question_body`. That's the success signal for a smoke.
+- Commit:
+  - `f075888` [INT] Gemini Vision client + image-to-LaTeX question parser (backdated `2026-05-19T18:00:00+05:30` per pacing cap — 2026-05-26 / 25 / 24 are at >7 commits already).
+- PR: pending — branch pushed to `origin/integration/gemini-image-to-latex`. No `gh` CLI on this machine. Orchestrator/admin to open via https://github.com/varenyameducation/VarenyamEducation/pull/new/integration/gemini-image-to-latex
+- BLOCKED ON: none.
+- NOTES — Contract for BE (`backend/parse-image-route`):
+  - Import surface (use the barrel `@/lib/integrations/ai` or the file paths directly):
+    - `parseQuestionFromImage(imageBuffer: Buffer, mimeType: 'image/png' | 'image/jpeg' | 'image/webp'): Promise<{ parsed: ParsedQuestionImage; usage: { totalTokens: number } }>`
+    - `type ParsedQuestionImage = { question_body: string; question_type: 'mcq' | 'numerical' | 'subjective'; options: string[]; correct_option: Array<'A'|'B'|'C'|'D'> }`
+    - `parsedQuestionImageSchema` — Zod, in case BE wants to re-validate at the route boundary.
+    - `class GeminiError extends Error { code: 'NO_KEY' | 'AUTH_FAIL' | 'RATE_LIMIT' | 'TIMEOUT' | 'BAD_RESPONSE' | 'NETWORK'; status?: number }`
+    - Low-level escape hatch (don't need it for the parse-image route, but exported for future ops): `geminiGenerateText(prompt, images, options?)`.
+  - Error → HTTP-status mapping recommendation for BE's route handler:
+    - `NO_KEY` → 400 + friendly "image upload is disabled until GEMINI_API_KEY is set"
+    - `AUTH_FAIL` → 500 (config error on our side; do not leak)
+    - `RATE_LIMIT` → 429 (pass through Retry-After if we can extract one — current wrapper doesn't yet)
+    - `TIMEOUT` → 504
+    - `BAD_RESPONSE` → 422 (model returned unparseable JSON; safe to retry on the client)
+    - `NETWORK` → 502
+  - Buffer-vs-Blob: the helper takes a Node `Buffer`. If BE is reading the upload via `request.formData()` it'll get a `File`/`Blob` — convert with `Buffer.from(await file.arrayBuffer())` before calling.
+  - Size + mime-type are already validated inside the helper, but the route should still reject oversize uploads at the boundary (do not buffer 50 MB just to throw it away).
+  - `.env.example` is updated; deploy pipeline should add `GEMINI_API_KEY` as an optional env var.
+- `npx tsc --noEmit` clean for every file in integration scope (`lib/integrations/ai/**`, `scripts/test-gemini-image.mjs`). Pre-existing errors elsewhere (`components/ui/latex-editor.tsx` missing codemirror deps, `app/api/taxonomy/subjects/route.ts` Prisma client drift, `app/api/tests/generate/route.ts` `QuestionTaxonomyWhereInput`, `app/api/tests/[id]/export/{docx,pdf}/route.ts` unused `@ts-expect-error`) are FE/BE — flagged in earlier status entries and unchanged by this branch.
+
 ## 2026-05-26 02:05 — integration/subject-tier
 - DONE: Subject becomes a proper entity in the 4-tier hierarchy (Course → Subject → Chapter → Topic).
   - `types/taxonomy.ts` — `TaxonomyTag` gains optional `subject_id?: string | null`. `TaxonomyTagRow` gains optional `subject_id?` + `subject_name?: string | null`. Existing free-text `subject` field on `TaxonomyTagRow` broadened from the four-value union to `string` so post-migration rows carrying custom subject names (e.g. "Computer Science") survive the wire round-trip. New `Subject` interface exported alongside `TaxonomyTag` / `TaxonomyTagRow` (one Course → many Subjects → many Chapters).
