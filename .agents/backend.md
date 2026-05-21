@@ -8,109 +8,105 @@
 git config user.email   # must be snehachoukseyobc@gmail.com
 ```
 
-## Current task — Populate joined-name fields on taxonomy responses
+## Current task — `POST /api/questions/parse-image` route
 
-**Why:** PRs #22 (INT shared types) and #23 (BE m2m API) shipped `taxonomies: TaxonomyTagRow[]` on `/api/questions` responses with ID-only rows. The FE PR (`frontend/multitax-blueprint-paper`, currently in conflict with main) needs human-readable chip labels and cannot afford an extra round-trip to fetch the course/chapter/topic tree on every question render. INT is extending `TaxonomyTagRow` with optional name fields on branch `integration/joined-names-on-tag-row`; **your job is to populate those fields from the Prisma `include`**.
+**Why:** User wants to upload a single image of a question and have the form auto-fill with the extracted text, math (as LaTeX), and MCQ options. INT is building the Gemini Vision wrapper + `parseQuestionFromImage()` helper on branch `integration/gemini-image-to-latex`. **Your job is the HTTP route that consumes that helper.** FE will then call this route from the question form.
 
-**Branch:** `backend/joined-names-on-tag-row`
+**Branch:** `backend/parse-image-route`
 
-**Base off:** `integration/joined-names-on-tag-row` (so your code typechecks against the new interface). Rebase to `main` if INT has merged by the time you start.
+**Base off:** `integration/gemini-image-to-latex` so your code typechecks against INT's helper. Rebase to `main` if INT has merged.
 
-### Schema check
+### Route shape
 
-- No Prisma changes. The `QuestionTaxonomy` model already has FK relations to `Course`, `Chapter?`, `Topic?`. You just need to `select` their names.
+- [ ] `app/api/questions/parse-image/route.ts` — single `POST` handler. Multipart form-data input.
 
-### Changes — `/api/questions/route.ts`
+  Request:
+  - Auth: any logged-in user (call `requireAuth()` like other question routes).
+  - Content-Type: `multipart/form-data`.
+  - Single field `file`: PNG, JPEG, or WebP, ≤ 5 MB.
 
-- [ ] Extend `taxonomySelect`:
-
-  ```ts
-  const taxonomySelect = {
-    id: true,
-    course_id: true,
-    chapter_id: true,
-    topic_id: true,
-    exam_type: true,
-    created_at: true,
-    course:  { select: { id: true, name: true } },
-    chapter: { select: { id: true, name: true, subject: true } },
-    topic:   { select: { id: true, name: true } },
-  } as const
-  ```
-
-- [ ] Update `TaxonomyRow` (the local type) to reflect the new shape so TS stays happy.
-
-- [ ] Update `withTaxonomies()` to flatten the nested includes into the row:
-
-  ```ts
-  function withTaxonomies<T extends { question_taxonomies: TaxonomyRow[] }>(question: T) {
-    const { question_taxonomies, ...rest } = question
-    return {
-      ...rest,
-      taxonomies: question_taxonomies.map((t) => ({
-        id: t.id,
-        course_id: t.course_id,
-        chapter_id: t.chapter_id,
-        topic_id: t.topic_id,
-        exam_type: t.exam_type,
-        created_at: t.created_at,
-        course_name: t.course?.name,
-        chapter_name: t.chapter?.name ?? null,
-        topic_name: t.topic?.name ?? null,
-        subject: t.chapter?.subject as 'Physics' | 'Chemistry' | 'Maths' | 'Biology' | undefined,
-      })),
+  Response (success — HTTP 200):
+  ```json
+  {
+    "success": true,
+    "data": {
+      "question_body": "If \\( \\frac{d}{dx} f(x) = 3x^2 - \\frac{3}{x^4} \\) ... is :",
+      "question_type": "mcq",
+      "options": ["\\( 6x + ... \\)", "...", "...", "..."],
+      "correct_option": [],
+      "usage": { "total_tokens": 1177 }
     }
   }
   ```
 
-  The shape returned now matches the extended `TaxonomyTagRow` from `@/types/taxonomy`. Keep the field names exactly aligned with INT's interface.
+  Response (error — HTTP 4xx/5xx with envelope from `lib/api/response.ts`):
+  - `400 INVALID_CONTENT_TYPE` — not multipart/form-data
+  - `400 FILE_REQUIRED` — no `file` field
+  - `400 FILE_EMPTY` — zero bytes
+  - `400 FILE_TOO_LARGE` — > 5 MB
+  - `400 INVALID_FILE_TYPE` — mimetype not in {image/png, image/jpeg, image/webp}
+  - `400 GEMINI_NOT_CONFIGURED` — `GeminiError` with code `NO_KEY`. Friendly message: "Image parsing requires GEMINI_API_KEY in environment. Ask admin to configure."
+  - `429 RATE_LIMITED` — `GeminiError` with code `RATE_LIMIT`. Include the model's retry-after if available.
+  - `502 GEMINI_FAILED` — any other `GeminiError` (auth_fail, timeout, bad_response, network). Include `details.code` and `details.status` for debugging.
+  - `500 PARSE_FAILED` — Zod parse error from INT's helper (Gemini returned malformed JSON). Include `details.raw` (the raw Gemini text) for debugging.
 
-### Changes — `/api/questions/[id]/route.ts` (PATCH + GET if applicable)
+### Implementation guidance
 
-- [ ] Apply the same `taxonomySelect` + `withTaxonomies()` updates. If `withTaxonomies` is duplicated, factor it into `lib/api/questions.ts` and re-import from both routes. If it's already imported, just update the one definition.
+- Mirror the patterns in `app/api/questions/import/route.ts`:
+  - `requireAuth()` from `@/lib/api/taxonomy`
+  - `getClientIp` from `@/lib/api/questions`
+  - `err` / `ok` envelope helpers from `@/lib/api/response`
+  - Multipart parsing via `request.formData()` wrapped in try/catch (fail with `INVALID_FORM`).
 
-### Changes — `/api/questions/[id]/taxonomies/route.ts` (POST add tag)
+- Import the parse helper from INT:
+  ```ts
+  import { parseQuestionFromImage } from '@/lib/integrations/ai/parse-question-image'
+  import { GeminiError } from '@/lib/integrations/ai/gemini'
+  ```
 
-- [ ] After insert, the route returns the new tag. Update its response to include the joined names by re-querying or by passing the include into the Prisma create.
-
-### Changes — `/api/questions/bulk/retag/route.ts`
-
-- [ ] If this route returns updated tags, include names. If it returns only counts (`{ added, removed }`), leave it alone.
-
-### Changes — `/api/questions/[id]/taxonomies/[taxonomyId]/route.ts` (DELETE)
-
-- [ ] Probably returns `{ ok: true }` — no shape change. Skim and confirm.
-
-### What you do NOT change
-
-- `types/taxonomy.ts` is INT's. Do not edit.
-- The Zod input schema (`lib/integrations/validation/taxonomy-tag.ts`) is INT's; it must still reject the new name fields on input (server populates them on output only).
-- FE files (`lib/ui/**`, `components/**`, `app/(dashboard)/**`).
+- Buffer construction: `Buffer.from(await file.arrayBuffer())`.
+- MIME validation: read `file.type`; if blank, sniff via filename extension (jpg/jpeg → image/jpeg, png → image/png, webp → image/webp). Reject anything else.
+- Wrap the helper call in try/catch that maps `GeminiError` codes to the 4xx/5xx codes listed above.
+- On success, log audit event `question.parse_image` with meta `{ actor_role, model: 'gemini-2.5-flash', total_tokens, question_type }` via `logAudit`.
 
 ### Validation
 
-- [ ] `npx prisma generate` clean.
-- [ ] `npx tsc --noEmit` clean (your worktree may not have INT's branch checked out yet — if you typecheck against current main and the new field references are flagged as unknown on `TaxonomyTagRow`, that's expected; rebase onto `integration/joined-names-on-tag-row` first or wait for it to merge).
+- [ ] `npx tsc --noEmit` clean.
+- [ ] Test the route end-to-end against the dev server:
+  ```bash
+  curl -X POST http://localhost:4000/api/questions/parse-image \
+    -b "__access_token=$(...)" \
+    -F "file=@/some/question/image.png"
+  ```
+  Confirm the JSON envelope shape matches the spec above.
+
+### What you do NOT touch
+
+- `lib/integrations/ai/**` is INT's. Just import from it.
+- `app/(dashboard)/**`, `components/**`, `lib/ui/**` (FE owns the upload UI).
+- `prisma/**`. No schema changes.
+- Do not create a new audit-log type — reuse `question.parse_image` as a new action string under the existing `audit_log` model.
 
 ### Workflow
 
 1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, and this brief.
-2. Check if INT's `integration/joined-names-on-tag-row` has merged to main:
+2. Check INT branch status:
    ```
    git fetch origin
-   git log origin/main --oneline -5 | grep -i "joined-names" || echo "INT not merged yet — base off integration/joined-names-on-tag-row"
+   git log origin/main --oneline -5 | grep -i "gemini\|image-to-latex" || echo "INT not merged — base off integration/gemini-image-to-latex"
    ```
-   - If merged: `git checkout main && git pull && git checkout -b backend/joined-names-on-tag-row`
-   - If not: `git checkout origin/integration/joined-names-on-tag-row -b backend/joined-names-on-tag-row` (you will rebase to main once INT lands)
-3. Make changes. One commit per route file or one combined commit — your call. Use `[BE]` prefix and no Claude footer.
-4. Push. Print the `pull/new/` URL.
-5. Append entry to `.agents/status-backend.md` with branch, commit list, PR URL.
-6. Run `~/report.sh backend "<short summary>"`.
-7. **Stop.**
+   - If INT merged: `git checkout main && git pull && git checkout -b backend/parse-image-route`
+   - Else: `git checkout origin/integration/gemini-image-to-latex -b backend/parse-image-route`
+3. Implement. One commit is fine.
+4. Commit with `[BE]` prefix. **No Claude attribution.**
+5. **Backdate per pacing rule:** today/yesterday over cap. Light days are 2026-05-13 to 2026-05-21. Pick something around 2026-05-21 evening IST.
+6. Push. If credential-manager refuses, commit locally; orchestrator will push.
+7. Append to `.agents/status-backend.md`: branch, commit SHA, push URL, and a one-paragraph contract summary for FE (which fields the route returns, which errors to display).
+8. **Stop.** Skip `~/report.sh`.
 
 ### Hard rules
 
-- Do not touch `prisma/schema.prisma`. No new migration.
-- Do not edit `types/taxonomy.ts`. That is INT's.
-- Do not touch FE files.
-- The wire shape returned from `/api/questions` MUST be a superset of what shipped in #23 (additive only). No fields removed.
+- One PR.
+- No new env vars beyond `GEMINI_API_KEY` (INT owns that; you just read process.env).
+- No npm dependencies.
+- Treat Gemini calls as expensive on the rate-limit dimension — do NOT add retry loops in this route (free tier is 15 req/min; retries would burn the quota). On 429 just return 429 to the client.

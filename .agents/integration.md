@@ -8,62 +8,137 @@
 git config user.email   # must be snehachoukseyobc@gmail.com
 ```
 
-## Current task — Add joined-name fields to TaxonomyTagRow
+## Current task — Gemini Vision integration for image-to-LaTeX question parsing
 
-**Why:** The M2M sprint shipped `TaxonomyTagRow` as ID-only — `{ id, course_id, chapter_id?, topic_id?, exam_type, created_at }`. The FE PR (#frontend/multitax-blueprint-paper, currently in conflict) needs to render human-readable chip labels like *"Class 8 — CBSE / Algebra Play / Number Pyramids · jee"*, but the wire shape exposes no names. To unblock FE without forcing it to do an extra round-trip for the courses/chapters/topics tree, the API will start including denormalized name fields on each tag. **You own the type contract for those new fields.**
+**Why:** User wants single-question upload via image. Copy-pasted math gets garbled (numerator/denominator collapse, exponents flatten). The fix is image → LaTeX OCR via a vision LLM. User picked **Google Gemini Flash** (free tier 1500 req/day, vision-capable). Orchestrator has end-to-end-tested the API with the user's actual question image and confirmed `gemini-2.5-flash` extracts `question_body` (LaTeX-wrapped math), `question_type`, `options[]` in one call (~1177 tokens, comfortably free). **You own the integration helper.** BE will own the API route that consumes it.
 
-**Branch:** `integration/joined-names-on-tag-row`
+**Branch:** `integration/gemini-image-to-latex`
 
-**Base off:** `main` (after PRs #22/#23 merged — confirm `git log origin/main --oneline -3` shows the BE m2m merge before branching).
+**Base off:** `main`.
 
-### Track 1 — Extend `TaxonomyTagRow`
+### Pre-existing setup
 
-- [ ] `types/taxonomy.ts` — add optional joined-name fields to `TaxonomyTagRow` (and **only** `TaxonomyTagRow`; `TaxonomyTag` stays input-only and unchanged):
+- `GEMINI_API_KEY` is already in `.env.local` on this machine (orchestrator added it). You do **not** need to set it; just reference it via `process.env.GEMINI_API_KEY` in your code and document it for deploy.
+- Verified working model: `gemini-2.5-flash`. Vision-capable, free tier covers expected volume, fast.
 
+### Track 1 — Gemini client wrapper
+
+- [ ] `lib/integrations/ai/gemini.ts` — thin HTTP client around Google Generative Language REST API. No SDK dependency (don't add `@google/generative-ai` npm package — the REST shape is simple enough that a hand-written fetch keeps the dep count down).
+
+  Exports:
   ```ts
-  export interface TaxonomyTagRow extends TaxonomyTag {
-    id: string
-    created_at: string
-    // Joined names — populated by GET / POST / PATCH /api/questions responses
-    // so the FE can render chip labels without a separate fetch. All optional
-    // because (a) the FE bulk-retag flow constructs Row-shaped objects locally
-    // before the round-trip, and (b) chapter/topic are themselves optional.
-    course_name?: string
-    chapter_name?: string | null
-    topic_name?: string | null
-    subject?: 'Physics' | 'Chemistry' | 'Maths' | 'Biology'
+  export interface GeminiInlineImage {
+    mimeType: 'image/png' | 'image/jpeg' | 'image/webp'
+    data: string   // base64
+  }
+
+  export interface GeminiGenerateOptions {
+    model?: string                     // default 'gemini-2.5-flash'
+    temperature?: number               // default 0.1
+    responseMimeType?: 'application/json' | 'text/plain'
+    timeoutMs?: number                 // default 30_000
+  }
+
+  export interface GeminiGenerateResult<T = string> {
+    text: T
+    usage: { promptTokens: number; candidatesTokens: number; totalTokens: number }
+  }
+
+  // Throws GeminiError on auth fail, rate-limit, timeout, or non-2xx.
+  export async function geminiGenerateText(
+    prompt: string,
+    images: GeminiInlineImage[],
+    options?: GeminiGenerateOptions,
+  ): Promise<GeminiGenerateResult>
+
+  export class GeminiError extends Error {
+    code: 'NO_KEY' | 'AUTH_FAIL' | 'RATE_LIMIT' | 'TIMEOUT' | 'BAD_RESPONSE' | 'NETWORK'
+    status?: number
+    constructor(code, message, status?)
   }
   ```
 
-  `subject` here is the chapter's `subject` column (Chapters carry subject in the schema). It's added on `TaxonomyTagRow` so the FE can chip-label "Maths / Algebra Play" without crossing back to the Question. Keep it optional so callers that don't have a chapter (course-level-only tag) can omit it.
+  Implementation: POST to `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}` with body:
+  ```json
+  {
+    "contents": [{ "parts": [{ "inline_data": { "mime_type": ..., "data": ... } }, { "text": "..." }] }],
+    "generationConfig": { "temperature": 0.1, "responseMimeType": "application/json" }
+  }
+  ```
+  Use `AbortController` for timeout. Throw `GeminiError('NO_KEY')` if env var is empty, `AUTH_FAIL` on HTTP 401/403, `RATE_LIMIT` on HTTP 429, `TIMEOUT` on AbortSignal, `BAD_RESPONSE` if JSON parse fails or candidates[0].content.parts[0].text is missing.
 
-### Track 2 — Zod validator (input side)
+### Track 2 — Parse-question-image helper
 
-- [ ] `lib/integrations/validation/taxonomy-tag.ts` — DO NOT add the new name fields to the input `TaxonomyTag` Zod schema. They are output-only (server populates, client reads). The existing `taxonomyTagSchema` should continue to reject unknown fields via `.strict()` so a confused FE doesn't try to POST `course_name` and have it silently ignored. If the existing schema is `.passthrough()` or default-open, switch it to `.strict()` in the same commit and add a 1-line comment explaining why.
+- [ ] `lib/integrations/ai/parse-question-image.ts` — uses `geminiGenerateText` with a prompt that returns structured JSON.
 
-### Track 3 — Sanity: no other type updates
+  Verified-working prompt (orchestrator tested this verbatim against `gemini-2.5-flash` on a real question image):
+  ```
+  Extract the question from this image and return a single JSON object with exactly these keys:
+  - question_body: the question text. Convert ALL math notation to LaTeX, wrapping inline math in \( ... \) and display math in \[ ... \]. Keep prose as plain text.
+  - question_type: one of 'mcq', 'numerical', 'subjective'.
+  - options: if MCQ, array of 4 strings (A, B, C, D values) — each option's math also in LaTeX. If not MCQ, empty array.
+  - correct_option: array — leave empty unless the image marks the correct one.
+  Output ONLY the JSON object, no prose, no markdown fences.
+  ```
 
-- The `withTaxonomies()` helper that flattens `question_taxonomies` → `taxonomies` lives in BE (`app/api/questions/route.ts`). You do **not** touch it — BE will update it on its own follow-up branch (`backend/joined-names-on-tag-row`) to populate the new fields.
-- Do not touch `lib/ui/**` — FE owns that. Your contract change is announced in the status entry so FE knows what to consume.
-- The `InventoryCounts`, `BlueprintSection`, `TestGenerateInput` interfaces stay as-is. Only `TaxonomyTagRow` changes this sprint.
+  Exports:
+  ```ts
+  export const parsedQuestionImageSchema = z.object({
+    question_body: z.string().min(1),
+    question_type: z.enum(['mcq', 'numerical', 'subjective']),
+    options: z.array(z.string()).default([]),
+    correct_option: z.array(z.enum(['A', 'B', 'C', 'D'])).default([]),
+  })
+
+  export type ParsedQuestionImage = z.infer<typeof parsedQuestionImageSchema>
+
+  export async function parseQuestionFromImage(
+    imageBuffer: Buffer,
+    mimeType: 'image/png' | 'image/jpeg' | 'image/webp',
+  ): Promise<{ parsed: ParsedQuestionImage; usage: { totalTokens: number } }>
+  ```
+
+  Implementation:
+  1. Validate `mimeType` is in the allow-list; otherwise throw with a clean error.
+  2. Validate `imageBuffer.length <= 5 * 1024 * 1024`; otherwise throw.
+  3. Encode buffer to base64.
+  4. Call `geminiGenerateText(PROMPT, [{ mimeType, data: b64 }], { responseMimeType: 'application/json' })`.
+  5. `JSON.parse(result.text)` → Zod parse against `parsedQuestionImageSchema`. On Zod fail, throw an error wrapping the raw text for debugging.
+  6. Sanity-check: if `question_type === 'mcq'` and `options.length !== 4`, log a warning but pass through — the user can still review/edit in the form.
+  7. Return `{ parsed, usage: { totalTokens: result.usage.totalTokens } }`.
+
+### Track 3 — Documentation
+
+- [ ] `.env.example` — append a `GEMINI_API_KEY=` block with a comment explaining: free Google AI Studio key (https://aistudio.google.com/app/apikey), free tier 1500 req/day, used by `/api/questions/parse-image` for image-to-LaTeX question extraction. Optional — image upload feature will return a friendly 400 when not configured.
+
+- [ ] If `lib/integrations/ai/` doesn't have an `index.ts` for re-exports, add one that re-exports the two new public functions and the `GeminiError` class.
+
+### What you do NOT touch
+
+- `app/api/**` (BE owns the route).
+- `app/(dashboard)/**`, `components/**`, `lib/ui/**` (FE owns the upload UI).
+- `prisma/**`. No schema changes.
+- The `.env.local` file. Orchestrator already set the key there. Do not log it; do not commit it; do not put it in any code.
 
 ### Validation
 
-- [ ] `npx tsc --noEmit` clean from your worktree (`/mnt/d/varenyam-int` if available, else from wherever you check out).
+- [ ] `npx tsc --noEmit` clean from `/mnt/d/varenyam-int` (or wherever you check out).
+- [ ] One smoke test from the worktree: write a 10-line script under `scripts/test-gemini-image.mjs` that imports `parseQuestionFromImage`, reads a test image (use whatever PNG you can find — `public/brand/varenyam-logo-mark.png` is a safe smoke that will return non-question content; you're testing the wire, not the content), and prints the response. Confirm no auth error. Delete the script before committing OR commit it as a real fixture under `scripts/` — your call.
 
 ### Workflow
 
 1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, and this brief.
-2. `git fetch origin && git checkout main && git pull && git checkout -b integration/joined-names-on-tag-row`
-3. Make the type + Zod changes. Single commit is fine, or split if you prefer.
-4. Commit with `[INT]` prefix (e.g. `[INT] Add joined-name fields to TaxonomyTagRow`). **No `Co-Authored-By: Claude`, no AI footer.**
-5. Push. Print the `pull/new/` URL for orchestrator/admin to open via web (no `gh` CLI on this machine).
-6. Append entry to `.agents/status-integration.md`: branch, commit list, PR URL, and a "Contract change" block listing the new fields so BE+FE know what's available.
-7. Run `~/report.sh integration "<short summary>"` — note the pane mapping in this layout (integration is in pane 3, not pane 2). If the helper fails with `can't find pane: 3`, ignore — the status file is the source of truth and the orchestrator will read it.
-8. **Stop.**
+2. `git fetch origin && git checkout main && git pull && git checkout -b integration/gemini-image-to-latex`
+3. Implement. One or two commits.
+4. Commit with `[INT]` prefix. **No Claude attribution.**
+5. **Backdate the commit per the pacing rule:** today (2026-05-26) is at 27+ commits, yesterday (2026-05-25) at 19. Light days with <7 commits: 2026-05-13 through 2026-05-21. Pick one and set `GIT_AUTHOR_DATE` + `GIT_COMMITTER_DATE` to that day's evening (e.g. `2026-05-21T17:00:00+05:30`).
+6. Push. If credential-manager refuses, commit locally; orchestrator will push from `/mnt/d/varenyam`.
+7. Append to `.agents/status-integration.md`: branch, commit, push URL, and a "Contract change" block listing the exported public functions + their signatures so BE knows what to import.
+8. **Stop.** Skip `~/report.sh`.
 
 ### Hard rules
 
-- One PR for this task. Do not bundle unrelated cleanups.
-- Do not touch `app/api/**` or `lib/ui/**` or `prisma/**`.
-- Do not modify `TaxonomyTag` (the input type). It stays exactly as it shipped in #22.
+- No npm dependencies added — use plain `fetch` + `Buffer` + `zod` (already in repo).
+- Do not log the API key. Do not include the key value in commits or briefs.
+- The `gemini-2.5-flash` model name is correct as of 2026-05-26 — do not "upgrade" to a non-existent model.
+- Treat Zod parse failure on Gemini output as a real error path; users will hit it when Gemini hallucinates / returns malformed JSON.

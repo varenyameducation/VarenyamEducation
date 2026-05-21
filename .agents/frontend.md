@@ -8,120 +8,125 @@
 git config user.email   # must be snehachoukseyobc@gmail.com
 ```
 
-## Current task — Resolve m2m PR conflict; consume joined-name fields
+## Current task — "Upload image of question" → auto-fill the single-question form
 
-**Why:** The frontend M2M PR (`frontend/multitax-blueprint-paper`, 5 commits, already pushed) has a textual conflict with main in `lib/ui/api.ts` plus a deeper type mismatch:
+**Why:** User reports that copy-pasting a math question from a PDF flattens the 2D math layout (numerator/denominator collapse into separate lines, exponents like `x²` become `x2`). The fix is to upload the image directly and have a vision LLM extract the structured question with LaTeX math. BE has shipped `POST /api/questions/parse-image` (on branch `backend/parse-image-route`) which returns:
 
-- FE built against a local mock `TaxonomyTag` in `@/lib/ui/mocks/m2m` that carries `course_name`, `chapter_name`, `topic_name`, `subject` (denormalized names for chip rendering).
-- INT + BE shipped a canonical `TaxonomyTagRow` in `@/types/taxonomy` that is ID-only.
+```json
+{
+  "success": true,
+  "data": {
+    "question_body": "If \\( \\frac{d}{dx} f(x) = 3x^2 - \\frac{3}{x^4} \\) ... is :",
+    "question_type": "mcq",
+    "options": ["\\( 6x + ... \\)", "\\( x^4 - ... \\)", "\\( x^3 + ... \\)", "\\( x^3 + ... \\)"],
+    "correct_option": [],
+    "usage": { "total_tokens": 1177 }
+  }
+}
+```
 
-INT has now landed `integration/joined-names-on-tag-row` (adds optional `course_name`/`chapter_name?`/`topic_name?`/`subject?` to `TaxonomyTagRow`). BE has landed `backend/joined-names-on-tag-row` (populates those fields on every `/api/questions` response). **Your job is to rebase, resolve the conflict, drop the mock TaxonomyTag type definition, and migrate all callsites to the canonical type.**
+**Your job is the UI** on the single-question creation form that consumes this route and pre-fills the form fields. **No taxonomy work, no paper work, no API work.**
 
-**Branch:** `frontend/multitax-blueprint-paper` (existing — don't create a new one; rebase the existing branch).
+**Branch:** `frontend/parse-image-upload`
 
-### Workflow at a glance
+**Base off:** `backend/parse-image-route` so your typecheck sees the route. Rebase to `main` if BE has merged.
 
-1. `git fetch origin && git checkout frontend/multitax-blueprint-paper && git pull`
-2. `git rebase origin/main` — expect a conflict in `lib/ui/api.ts`. Resolve by taking main's side (the canonical interface) **and** dropping the legacy `course`/`chapter`/`topic` joined fields on `Question` (BE no longer returns them).
-3. Cascade-fix the consumer files (listed below).
-4. `npx tsc --noEmit` clean.
-5. `npx next build` (optional but recommended) to catch any runtime-only issues.
-6. Force-push the rebased branch: `git push --force-with-lease`.
-7. Append status entry; stop.
+### UI placement
 
-### File-by-file changes
-
-#### `lib/ui/api.ts`
-
-- Take main's side for both conflict hunks.
-- Final shape of the import:
-  ```ts
-  import type { TaxonomyTagRow } from '@/types/taxonomy'
+- Existing form: `app/(dashboard)/questions/new/page.tsx` + the shared `components/questions/question-form.tsx`.
+- Add a new section **above the "Question body" textarea**:
   ```
-- Final shape of `Question`:
+  ┌─────────────────────────────────────────────────────────────┐
+  │  Paste / upload an image of a question to auto-fill          │
+  │  the form. We'll OCR the math into LaTeX for you.            │
+  │                                                              │
+  │  [ Upload image (PNG/JPG/WebP, max 5MB) ]                    │
+  │                                                              │
+  │  Tip: works best when the question + options are all in      │
+  │  view. Math notation is converted to LaTeX automatically.    │
+  └─────────────────────────────────────────────────────────────┘
+  ```
+- Drag-and-drop is a nice-to-have but not required. A single `<input type="file" accept="image/png,image/jpeg,image/webp">` triggered by a button is enough.
+
+### Component: `components/questions/parse-from-image.tsx` (new)
+
+- Self-contained component. Props:
   ```ts
-  export interface Question {
-    id: string
-    subject: SubjectValue
-    ...
-    taxonomies: TaxonomyTagRow[]
-    // No more course/chapter/topic joined fields.
+  interface ParseFromImageProps {
+    onParsed: (data: {
+      question_body: string
+      question_type: 'mcq' | 'numerical' | 'subjective'
+      options: string[]
+      correct_option: ('A'|'B'|'C'|'D')[]
+    }) => void
+    disabled?: boolean   // disable while the parent form is submitting
   }
   ```
+- States: `idle | uploading | success | error`.
+- On file select:
+  1. Client-side validation: type in {png, jpeg, webp}, size ≤ 5 MB. Show inline error if fail; no network call.
+  2. POST `multipart/form-data` to `/api/questions/parse-image` with the single `file` field.
+  3. On success (HTTP 200): call `onParsed(data)`. Show a "Parsed in ${ms}ms (~${tokens} tokens)" toast for 3s.
+  4. On error: map to a human-readable line and show inline:
+     - 400 `GEMINI_NOT_CONFIGURED` → "Image upload requires the GEMINI_API_KEY env var. Ask an admin to configure."
+     - 429 `RATE_LIMITED` → "Rate limit hit (15 requests/min on free tier). Try again in a minute."
+     - 502 `GEMINI_FAILED` → "The OCR service didn't respond cleanly. Try again, or paste the question manually."
+     - 500 `PARSE_FAILED` → "We couldn't parse the response. Try a clearer image, or paste the question manually."
+     - Other → show the error.message.
+- Loading UI: spinner + "Reading your image…" — the call usually takes 3-8 seconds.
 
-#### `lib/ui/mocks/m2m.ts`
+### Form integration
 
-- Delete the local `export type TaxonomyTag = { course_id; course_name; ... }` definition.
-- Re-export from canonical:
-  ```ts
-  export type { TaxonomyTag, TaxonomyTagRow } from '@/types/taxonomy'
-  ```
-- `formatTagLabel(tag)` — change parameter type to `TaxonomyTagRow`. Read `tag.course_name`, `tag.chapter_name`, `tag.topic_name` (all now live on the canonical row when populated by BE). Fall back to the IDs (formatted as short strings) when names are missing — this keeps the function safe for locally-constructed rows that haven't round-tripped through the API yet.
-- `deriveQuestionTags(q)` — this used to fabricate a `TaxonomyTag` from the legacy `Question.course/chapter/topic` joined fields. Those are GONE on `Question`. **Delete `deriveQuestionTags` and all its callsites** — consumers should read `q.taxonomies` directly. If a callsite needs a "first tag" fallback for legacy untagged questions, use `q.taxonomies[0]` and gate the render with `q.taxonomies.length > 0`.
-- `MOCK_M2M_TAGS_BY_QUESTION` — update each mock row to be the canonical shape: `{ id, course_id, chapter_id?, topic_id?, exam_type, created_at, course_name, chapter_name?, topic_name?, subject? }`. Generate plausible `id`/`created_at` for the mocks (e.g. `crypto.randomUUID()` and `new Date().toISOString()` evaluated once at module load, or hard-coded fixtures).
-- `LegacyTaggedQuestion` type can be deleted (its only consumer was `deriveQuestionTags`).
+- In `components/questions/question-form.tsx`, mount `<ParseFromImage>` above the question-body textarea.
+- The `onParsed` handler should:
+  1. `setValue('question_body', data.question_body)` — overwrite whatever's there.
+  2. `setValue('question_type', data.question_type)` — overwrite.
+  3. If `question_type === 'mcq'` and `options.length >= 4`:
+     - `setValue('option_a', data.options[0])`
+     - `setValue('option_b', data.options[1])`
+     - `setValue('option_c', data.options[2])`
+     - `setValue('option_d', data.options[3])`
+  4. If `correct_option` array is non-empty, `setValue('correct_option', data.correct_option)`.
+- Use the existing `useForm` instance from react-hook-form. Don't introduce a new form lib.
+- Confirm-before-overwrite: if any of the form fields are already non-empty when the user clicks "Upload image," show a small confirm dialog: "This will overwrite your current Question body / options. Continue?" — single button yes, cancel = abort the upload. This prevents accidental wipes.
 
-#### `components/questions/taxonomy-tag-picker.tsx`
+### LaTeX preview (nice-to-have)
 
-- The component holds picker state. Internal `value: TaxonomyTag[]` from `@/types/taxonomy` should remain the input/output type (no names) — the picker BUILDS tags, doesn't render labels for tags-in-flight. For chip labels, take a parallel `taxonomyOptions: TaxonomyTagRow[]` prop that has names, or do a lookup against the in-context course/chapter/topic state that the parent already has.
-- Cleanest interface change: keep `value: TaxonomyTag[]` (canonical input shape, name-less) and add a `formatLabel?: (tag: TaxonomyTag) => string` callback prop that the parent supplies. Parent has access to its course/chapter/topic state and can format. Default the formatter to a fallback that prints `chapter_id ?? course_id`.
-- This is a real refactor — take care to keep the existing keyboard/blur behavior.
-
-#### `components/questions/question-form.tsx`
-
-- Update the `taxonomies` field state to be `TaxonomyTag[]` (without names — they get added by the server after POST). On form submit, you already POST `taxonomies` to `/api/questions`; the request body is unchanged. On form mount when editing an existing question, you read `q.taxonomies` which is now `TaxonomyTagRow[]` — strip the row's `id`/`created_at`/name fields before seeding the picker's state.
-- The legacy `course_id`/`chapter_id`/`topic_id`/`exam_type` top-level fields you held back as v1-compat should now be REMOVED from the form schema and submit body — BE only accepts `taxonomies` now.
-
-#### `components/questions/bulk-retag-modal.tsx`
-
-- Same picker integration treatment as the form. Internal state `tags: TaxonomyTag[]`.
-
-#### `components/questions/question-card.tsx`
-
-- Currently calls `deriveQuestionTags(q)` to get tags. Replace with `q.taxonomies`. Use `formatTagLabel(tag)` directly (now name-aware).
-
-#### `app/(dashboard)/questions/[id]/page.tsx`
-
-- Same `deriveQuestionTags` → `q.taxonomies` swap. The header chip strip now reads server-provided names.
-- If this page reads `q.exam_type` anywhere, replace with `q.taxonomies[0]?.exam_type ?? '—'` or a de-duped list of all `taxonomies[].exam_type` values.
-
-#### `app/(dashboard)/questions/[id]/edit/page.tsx`
-
-- Drops `import type { TaxonomyTag } from '@/lib/ui/mocks/m2m'` — switch to `@/types/taxonomy`.
-- The `seedTag` derivation that reads `q.course_id` etc. won't compile (`Question` no longer has these fields). Replace with `const seedTags = q.taxonomies` (already an array; pass directly to the form).
-
-#### `app/(dashboard)/questions/page.tsx`
-
-- Filters and grouping currently read `q.course?.id`/`q.chapter?.id`/`q.topic?.id`. These joined fields are gone. Switch to reading the **first** taxonomy tag for backward-compatible grouping (or, if you want to honor multi-tagging, group by every `(q, tag)` cross-product — note this in the status entry).
-- Filter sidebar still posts `course_id`/`chapter_id`/`topic_id`/`exam_type` as query params; that contract is unchanged.
-
-#### `app/(dashboard)/tests/new/page.tsx`
-
-- Imports `GenerateTestPayload` from `@/lib/ui/mocks/m2m` — this stays (mock module re-exports it). No change unless typecheck flags it.
+- The existing question-body textarea probably doesn't render LaTeX. If there's already a KaTeX/MathJax preview pane elsewhere in the form, **leave it alone**. If there isn't, **don't add one** in this PR — out of scope. The user will see plain LaTeX source `\( \frac{d}{dx} ... \)` in the textarea, and the rendered output will appear in the paper export. That's acceptable for v1.
 
 ### Validation
 
-- [ ] `npx tsc --noEmit` exit 0.
-- [ ] Smoke test by clicking through: question bank list → question detail → edit → bulk retag → test creator blueprint mode. (You can do this in dev — `npm run dev` — if you want, but typecheck-clean is the binding bar.)
+- [ ] `npx tsc --noEmit` clean from `/mnt/d/varenyam-fe`.
+- [ ] Smoke check in dev: open `/questions/new`, click "Upload image," pick a screenshot of a math question, confirm:
+  - "Reading your image…" spinner shows
+  - On success, question_body fills with `\( ... \)` LaTeX
+  - If MCQ image, all 4 options fill
+  - `question_type` switches to the right radio
+- [ ] Smoke check the confirm-before-overwrite path: type something in the textarea first, then try to upload.
 
 ### Push
 
-- The branch is shared with origin (already pushed). After rebase you'll need a force push:
-  ```
-  git push --force-with-lease origin frontend/multitax-blueprint-paper
-  ```
-  Use `--force-with-lease`, NOT `--force` (so you don't clobber someone else's commits).
+- Standard. If credential-manager refuses from `/mnt/d/varenyam-fe`, commit locally and orchestrator will push.
 
-### Status + report
+### Workflow
 
-- Append to `.agents/status-frontend.md`: rebase note, files changed, commit list, force-push confirmation, PR URL (same one — `https://github.com/varenyameducation/VarenyamEducation/pull/<N>` if you know the number, otherwise the `pull/new/` URL the previous push printed).
-- Run `~/report.sh frontend "<one-line summary>"`.
-- **Stop.**
+1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, this brief.
+2. Wait for BE branch to exist:
+   ```
+   git fetch origin
+   git ls-remote origin backend/parse-image-route | grep refs/heads || echo "BE not pushed yet — wait"
+   ```
+3. `git checkout origin/backend/parse-image-route -b frontend/parse-image-upload` (or off `main` if BE has merged).
+4. Implement. Single commit OK.
+5. Commit with `[FE]` prefix. **No Claude attribution.**
+6. **Backdate per pacing rule:** today/yesterday over cap. Pick a light day 2026-05-13 to 2026-05-21 evening IST.
+7. Push (or hand off to orchestrator for credential reasons).
+8. Append to `.agents/status-frontend.md`: branch, commit, push URL, and a one-line smoke result.
+9. **Stop.** Skip `~/report.sh`.
 
 ### Hard rules
 
-- Single PR. The existing FE PR gets force-pushed; do not open a new one.
-- Do not touch `types/taxonomy.ts` (INT's). Do not touch `app/api/**` (BE's).
-- Do not run `--force` without `--with-lease`.
-- No Claude attribution in commits.
-- If the typecheck reveals an additional FE file that reads the removed `q.course_id`/`q.exam_type` etc. fields and it is not in the list above, FIX it in the same PR — do not leave breakage. Note any genuinely-out-of-FE-scope files in the status entry (none expected — BE has cleaned its own routes already).
+- One PR.
+- Don't touch `app/api/**`, `types/**`, `prisma/**`, `lib/integrations/**`.
+- Don't add new npm deps. shadcn/Dialog already exists for the confirm prompt; `apiPost` already exists in `lib/ui/api.ts` for the fetch.
+- The textarea stays plain text for v1 — LaTeX preview is a future enhancement.
