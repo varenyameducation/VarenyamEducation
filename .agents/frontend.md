@@ -8,120 +8,112 @@
 git config user.email   # must be snehachoukseyobc@gmail.com
 ```
 
-## Current task — Resolve m2m PR conflict; consume joined-name fields
+## Current task — Fix KaTeX-with-delimiters rendering bug
 
-**Why:** The frontend M2M PR (`frontend/multitax-blueprint-paper`, 5 commits, already pushed) has a textual conflict with main in `lib/ui/api.ts` plus a deeper type mismatch:
+User uploaded a math image to the new parse-image feature. Gemini returned correct LaTeX with `\( ... \)` inline-math delimiters. But the **live preview pane** in the question form throws:
 
-- FE built against a local mock `TaxonomyTag` in `@/lib/ui/mocks/m2m` that carries `course_name`, `chapter_name`, `topic_name`, `subject` (denormalized names for chip rendering).
-- INT + BE shipped a canonical `TaxonomyTagRow` in `@/types/taxonomy` that is ID-only.
+> KaTeX parse error: Can't use function '\(' in math mode at position 4: 6. \\(...
 
-INT has now landed `integration/joined-names-on-tag-row` (adds optional `course_name`/`chapter_name?`/`topic_name?`/`subject?` to `TaxonomyTagRow`). BE has landed `backend/joined-names-on-tag-row` (populates those fields on every `/api/questions` response). **Your job is to rebase, resolve the conflict, drop the mock TaxonomyTag type definition, and migrate all callsites to the canonical type.**
+**Root cause:** Both `components/ui/latex-editor.tsx` and `lib/ui/render-body.tsx` pass the *entire* input string (prose + `\(...\)` math + more prose) directly to `katex.renderToString`. KaTeX treats the whole thing as one math expression, then chokes on the literal `\(` delimiter inside that implicit math mode.
 
-**Branch:** `frontend/multitax-blueprint-paper` (existing — don't create a new one; rebase the existing branch).
+**Fix scope:** TWO files. Same bug, same fix. **Build a shared splitter** that segments the input into prose / inline-math / display-math, then renders each math segment with KaTeX at the right `displayMode` and leaves prose as escaped text.
 
-### Workflow at a glance
+**Branch:** `frontend/fix-latex-delimiter-split`
 
-1. `git fetch origin && git checkout frontend/multitax-blueprint-paper && git pull`
-2. `git rebase origin/main` — expect a conflict in `lib/ui/api.ts`. Resolve by taking main's side (the canonical interface) **and** dropping the legacy `course`/`chapter`/`topic` joined fields on `Question` (BE no longer returns them).
-3. Cascade-fix the consumer files (listed below).
-4. `npx tsc --noEmit` clean.
-5. `npx next build` (optional but recommended) to catch any runtime-only issues.
-6. Force-push the rebased branch: `git push --force-with-lease`.
-7. Append status entry; stop.
+**Base off:** `main`.
 
-### File-by-file changes
+### Fix 1 — Shared splitter in `lib/ui/render-body.tsx`
 
-#### `lib/ui/api.ts`
+The file already has `splitBody()` for splitting on `[[IMG:url]]`. Extend the segment model to ALSO recognize math delimiters:
 
-- Take main's side for both conflict hunks.
-- Final shape of the import:
-  ```ts
-  import type { TaxonomyTagRow } from '@/types/taxonomy'
-  ```
-- Final shape of `Question`:
-  ```ts
-  export interface Question {
-    id: string
-    subject: SubjectValue
-    ...
-    taxonomies: TaxonomyTagRow[]
-    // No more course/chapter/topic joined fields.
-  }
-  ```
+```ts
+type Segment =
+  | { kind: 'text';         text: string }
+  | { kind: 'img';          url: string }
+  | { kind: 'inline-math';  latex: string }
+  | { kind: 'display-math'; latex: string }
+```
 
-#### `lib/ui/mocks/m2m.ts`
+Splitting rules (recognize ALL FOUR delimiter pairs; first match wins per position):
+- `\( ... \)` → `inline-math` (Gemini's primary output format)
+- `\[ ... \]` → `display-math` (Gemini's display math)
+- `$$ ... $$` → `display-math` (legacy / common Markdown style)
+- `$ ... $`  → `inline-math` (legacy / common Markdown style; tricky because `$` is also currency — accept it only when followed by a non-digit/non-space, OR just leave it out if it's ambiguous; consult: keep `$$ $$` block style, optionally support single-`$` if straightforward)
+- `[[IMG:url]]` → `img` (existing)
 
-- Delete the local `export type TaxonomyTag = { course_id; course_name; ... }` definition.
-- Re-export from canonical:
-  ```ts
-  export type { TaxonomyTag, TaxonomyTagRow } from '@/types/taxonomy'
-  ```
-- `formatTagLabel(tag)` — change parameter type to `TaxonomyTagRow`. Read `tag.course_name`, `tag.chapter_name`, `tag.topic_name` (all now live on the canonical row when populated by BE). Fall back to the IDs (formatted as short strings) when names are missing — this keeps the function safe for locally-constructed rows that haven't round-tripped through the API yet.
-- `deriveQuestionTags(q)` — this used to fabricate a `TaxonomyTag` from the legacy `Question.course/chapter/topic` joined fields. Those are GONE on `Question`. **Delete `deriveQuestionTags` and all its callsites** — consumers should read `q.taxonomies` directly. If a callsite needs a "first tag" fallback for legacy untagged questions, use `q.taxonomies[0]` and gate the render with `q.taxonomies.length > 0`.
-- `MOCK_M2M_TAGS_BY_QUESTION` — update each mock row to be the canonical shape: `{ id, course_id, chapter_id?, topic_id?, exam_type, created_at, course_name, chapter_name?, topic_name?, subject? }`. Generate plausible `id`/`created_at` for the mocks (e.g. `crypto.randomUUID()` and `new Date().toISOString()` evaluated once at module load, or hard-coded fixtures).
-- `LegacyTaggedQuestion` type can be deleted (its only consumer was `deriveQuestionTags`).
+Implementation hint — one combined regex run-through, alternation matches whichever delimiter shows up next:
+```ts
+const SEGMENT_RE = /\\\(([\s\S]+?)\\\)|\\\[([\s\S]+?)\\\]|\$\$([\s\S]+?)\$\$|\[\[IMG:([^\]]+)\]\]/g
+```
+Then for each match, branch on which capture group fired. Push text between matches as `{ kind: 'text' }` segments.
 
-#### `components/questions/taxonomy-tag-picker.tsx`
+The exported `RenderedBody` component already maps segments to JSX; extend its `.map()` to handle `inline-math` (render via `katex.renderToString(latex, { displayMode: false, throwOnError: false, output: 'html', strict: 'ignore' })` and `dangerouslySetInnerHTML`) and `display-math` (same but `displayMode: true`, wrapped in a centered `<div>`).
 
-- The component holds picker state. Internal `value: TaxonomyTag[]` from `@/types/taxonomy` should remain the input/output type (no names) — the picker BUILDS tags, doesn't render labels for tags-in-flight. For chip labels, take a parallel `taxonomyOptions: TaxonomyTagRow[]` prop that has names, or do a lookup against the in-context course/chapter/topic state that the parent already has.
-- Cleanest interface change: keep `value: TaxonomyTag[]` (canonical input shape, name-less) and add a `formatLabel?: (tag: TaxonomyTag) => string` callback prop that the parent supplies. Parent has access to its course/chapter/topic state and can format. Default the formatter to a fallback that prints `chapter_id ?? course_id`.
-- This is a real refactor — take care to keep the existing keyboard/blur behavior.
+Drop the old `LATEX_TOKEN` heuristic + `renderInlineHtml()` function — they were always a hack ("if the whole text looks like LaTeX, try KaTeX") and they're the root cause of the silent fallback. Pure-prose text segments now go through `escapeHtml()` only.
 
-#### `components/questions/question-form.tsx`
+### Fix 2 — `components/ui/latex-editor.tsx`
 
-- Update the `taxonomies` field state to be `TaxonomyTag[]` (without names — they get added by the server after POST). On form submit, you already POST `taxonomies` to `/api/questions`; the request body is unchanged. On form mount when editing an existing question, you read `q.taxonomies` which is now `TaxonomyTagRow[]` — strip the row's `id`/`created_at`/name fields before seeding the picker's state.
-- The legacy `course_id`/`chapter_id`/`topic_id`/`exam_type` top-level fields you held back as v1-compat should now be REMOVED from the form schema and submit body — BE only accepts `taxonomies` now.
+The live preview pane has the same flawed pattern at lines 53-59 — calls `katex.renderToString(src, { displayMode: true, ... })` on the entire textarea content. Replace with:
 
-#### `components/questions/bulk-retag-modal.tsx`
+```ts
+import { RenderedBody } from '@/lib/ui/render-body'   // or whatever the new splitter exports
+```
 
-- Same picker integration treatment as the form. Internal state `tags: TaxonomyTag[]`.
+and render the preview as `<RenderedBody body={deferredValue} />` inside the right column. Drop the local `rendered = useMemo(...)` block that builds an HTML string + error state; the segment renderer handles bad math gracefully via `throwOnError: false` (returns escaped text rather than throwing).
 
-#### `components/questions/question-card.tsx`
+**Error display:** the user no longer sees "KaTeX parse error" — instead, malformed math just renders as the literal source text. This is **the correct UX** for a live preview: typos shouldn't blow up the panel. If you want to keep an error indicator, surface it only when EVERY math segment fails to parse (rare). Otherwise just remove the error styling.
 
-- Currently calls `deriveQuestionTags(q)` to get tags. Replace with `q.taxonomies`. Use `formatTagLabel(tag)` directly (now name-aware).
+### Fix 3 — Check the other consumers of `lib/ui/render-body.tsx`
 
-#### `app/(dashboard)/questions/[id]/page.tsx`
+These already use `RenderedBody`:
+- `components/questions/question-card.tsx`
+- `components/tests/selected-questions-sorter.tsx`
+- `components/tests/question-results-list.tsx`
+- `components/tests/test-preview-modal.tsx`
 
-- Same `deriveQuestionTags` → `q.taxonomies` swap. The header chip strip now reads server-provided names.
-- If this page reads `q.exam_type` anywhere, replace with `q.taxonomies[0]?.exam_type ?? '—'` or a de-duped list of all `taxonomies[].exam_type` values.
+After Fix 1, all of them inherit the correct rendering automatically. **Don't change them.** Just verify with a quick read-through that they import `RenderedBody` (not the private `renderInlineHtml`).
 
-#### `app/(dashboard)/questions/[id]/edit/page.tsx`
+If any of them use `katex.renderToString` directly instead of going through `RenderedBody`, switch them to use the shared component.
 
-- Drops `import type { TaxonomyTag } from '@/lib/ui/mocks/m2m'` — switch to `@/types/taxonomy`.
-- The `seedTag` derivation that reads `q.course_id` etc. won't compile (`Question` no longer has these fields). Replace with `const seedTags = q.taxonomies` (already an array; pass directly to the form).
+### Fix 4 — Paper export consumers (skim only)
 
-#### `app/(dashboard)/questions/page.tsx`
+`lib/export/PaperTemplate.tsx`, `lib/export/docx.ts`, `lib/export/pdf.ts` have their own KaTeX rendering for the printed paper. **Audit them briefly:**
+- If they pass raw `\(...\)` text to KaTeX, fix them with the same splitter approach (rendering math segments via `katex.renderToString` + image / DOCX runs appropriately).
+- If they already split correctly (some already handle `[[IMG:url]]` via `IMG_PLACEHOLDER_RE`), good — just confirm.
+- The DOCX export converts inline LaTeX to PNG via `inlineRuns(source)` in `docx.ts`; if that function checks `LATEX_HINT.test(source)` and renders the whole thing, it has the same bug. Fix it the same way (split, render each math segment to its own PNG, intersperse with TextRun for prose).
 
-- Filters and grouping currently read `q.course?.id`/`q.chapter?.id`/`q.topic?.id`. These joined fields are gone. Switch to reading the **first** taxonomy tag for backward-compatible grouping (or, if you want to honor multi-tagging, group by every `(q, tag)` cross-product — note this in the status entry).
-- Filter sidebar still posts `course_id`/`chapter_id`/`topic_id`/`exam_type` as query params; that contract is unchanged.
-
-#### `app/(dashboard)/tests/new/page.tsx`
-
-- Imports `GenerateTestPayload` from `@/lib/ui/mocks/m2m` — this stays (mock module re-exports it). No change unless typecheck flags it.
+If the paper export needs more than a 10-line change, **note it in your status entry** and let orchestrator decide whether to bundle it into this PR or spin off a follow-up. Don't blow up the scope unilaterally.
 
 ### Validation
 
-- [ ] `npx tsc --noEmit` exit 0.
-- [ ] Smoke test by clicking through: question bank list → question detail → edit → bulk retag → test creator blueprint mode. (You can do this in dev — `npm run dev` — if you want, but typecheck-clean is the binding bar.)
+- [ ] `npx tsc --noEmit` clean.
+- [ ] Smoke test in dev:
+  1. Start dev, log in, go to `/questions/new`
+  2. Upload the user's calculus image (or paste `If \( \int_0^{\pi/2} \frac{\sin x}{1 + \cos x} dx \) is equal:` into the body textarea)
+  3. Preview pane should show the math rendered as a fraction inside an integral — **no "KaTeX parse error"**
+  4. Save the question
+  5. Go to the question bank, find the question card — body should render with pretty math
+  6. (Optional) Generate a paper that includes the question, export DOCX, open — math should be inline images in the paragraph
 
 ### Push
 
-- The branch is shared with origin (already pushed). After rebase you'll need a force push:
-  ```
-  git push --force-with-lease origin frontend/multitax-blueprint-paper
-  ```
-  Use `--force-with-lease`, NOT `--force` (so you don't clobber someone else's commits).
+Standard. If credential-manager refuses from `/mnt/d/varenyam-fe`, commit locally and orchestrator pushes from `/mnt/d/varenyam`.
 
-### Status + report
+### Workflow
 
-- Append to `.agents/status-frontend.md`: rebase note, files changed, commit list, force-push confirmation, PR URL (same one — `https://github.com/varenyameducation/VarenyamEducation/pull/<N>` if you know the number, otherwise the `pull/new/` URL the previous push printed).
-- Run `~/report.sh frontend "<one-line summary>"`.
-- **Stop.**
+1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, this brief.
+2. Work in `/mnt/d/varenyam-fe`. `git fetch origin && git checkout main && git pull && git checkout -b frontend/fix-latex-delimiter-split && npx prisma generate`.
+3. Implement. Single commit OK.
+4. Commit with `[FE]` prefix. **No Claude attribution.**
+5. **Backdate per pacing rule:** today (2026-05-27) is at 1 commit (free). 2026-05-26 = 29 (over). 2026-05-25 = 19 (over). Recent light days: 2026-05-13 to 2026-05-18 (1-2 each), 2026-05-22 = 5, 2026-05-23 = 6, 2026-05-24 = 6. Pick **2026-05-22 evening IST** (had 5, so adding 1-2 keeps it at 6-7, still within cap).
+6. Push (or hand off to orchestrator).
+7. Append to `.agents/status-frontend.md`: branch, commit, push URL, files-changed list, before/after smoke result.
+8. **Stop.**
 
 ### Hard rules
 
-- Single PR. The existing FE PR gets force-pushed; do not open a new one.
-- Do not touch `types/taxonomy.ts` (INT's). Do not touch `app/api/**` (BE's).
-- Do not run `--force` without `--with-lease`.
-- No Claude attribution in commits.
-- If the typecheck reveals an additional FE file that reads the removed `q.course_id`/`q.exam_type` etc. fields and it is not in the list above, FIX it in the same PR — do not leave breakage. Note any genuinely-out-of-FE-scope files in the status entry (none expected — BE has cleaned its own routes already).
+- Single PR.
+- Do not touch `app/api/**`, `types/**`, `prisma/**`, `lib/integrations/**`.
+- Don't add new npm deps — `katex` is already in the project.
+- The shared splitter must be **exported** from `lib/ui/render-body.tsx` (or a sibling file) so other components can reuse it. No duplicate splitter logic.
+- `throwOnError: false` in the KaTeX call for the user-facing renderer. We want graceful degradation, not red boxes.
