@@ -5,7 +5,7 @@ import { PaperTemplate, type PaperMeta, type PaperRow } from './PaperTemplate'
 type Props = {
   test: TestWithQuestions
   branding: Branding
-  // Inlined logo data URL — pdf.ts reads /public/brand/varenyam-logo-full.png
+  // Inlined logo data URL — pdf.ts reads /public/brand/varenyam-logo-mark.png
   // and base64-encodes it so Puppeteer can render without a base URL.
   logoSrc?: string
 }
