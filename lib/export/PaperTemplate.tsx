@@ -49,6 +49,28 @@ function renderKatex(source: string | null | undefined): string {
   }
 }
 
+// Render a body that may contain inline `[[IMG:<url>]]` placeholders plus
+// LaTeX-ish text. Produces a single HTML string ready for
+// dangerouslySetInnerHTML. Images use a hard max-height so they don't blow
+// out the page layout in the PDF.
+function renderBodyWithImages(source: string | null | undefined): string {
+  if (!source) return ''
+  const parts: string[] = []
+  const re = /\[\[IMG:([^\]]+)\]\]/g
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(source))) {
+    if (m.index > last) parts.push(renderKatex(source.slice(last, m.index)))
+    const url = m[1].replace(/"/g, '&quot;')
+    parts.push(
+      `<img src="${url}" alt="" style="display:block;max-width:100%;max-height:200px;margin:6px 0;" />`,
+    )
+    last = re.lastIndex
+  }
+  if (last < source.length) parts.push(renderKatex(source.slice(last)))
+  return parts.join('')
+}
+
 function escapeHtml(input: string): string {
   return input
     .replace(/&/g, '&amp;')
@@ -221,7 +243,7 @@ function QuestionRow({ index, row }: { index: number; row: PaperRow }) {
         <div style={{ display: 'flex', gap: 4, flex: 1 }}>
           <span style={styles.qNumber}>Q{index}.</span>
           <span
-            dangerouslySetInnerHTML={{ __html: renderKatex(q.question_body) }}
+            dangerouslySetInnerHTML={{ __html: renderBodyWithImages(q.question_body) }}
             style={{ flex: 1 }}
           />
         </div>

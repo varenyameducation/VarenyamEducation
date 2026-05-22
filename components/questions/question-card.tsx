@@ -6,6 +6,7 @@ import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { RenderedBody } from '@/lib/ui/render-body'
 import type { Question } from '@/lib/ui/api'
 import type { DifficultyValue } from '@/lib/validation/question'
 import { cn } from '@/lib/utils'
@@ -46,8 +47,6 @@ const OPTION_KEYS = ['option_a', 'option_b', 'option_c', 'option_d'] as const
 const OPTION_LETTERS = ['A', 'B', 'C', 'D'] as const
 
 export function QuestionCard({ q }: { q: Question }) {
-  const bodyHtml = React.useMemo(() => renderInline(q.question_body), [q.question_body])
-
   const correctSet = React.useMemo(
     () => new Set((q.correct_option ?? []).map((c) => c.toUpperCase())),
     [q.correct_option],
@@ -73,10 +72,7 @@ export function QuestionCard({ q }: { q: Question }) {
         </span>
       </header>
 
-      <div
-        className="text-sm text-foreground/90"
-        dangerouslySetInnerHTML={{ __html: bodyHtml }}
-      />
+      <RenderedBody className="text-sm text-foreground/90" body={q.question_body} />
 
       {isMcq && (
         <ol className="grid gap-1.5 sm:grid-cols-2 text-sm">
