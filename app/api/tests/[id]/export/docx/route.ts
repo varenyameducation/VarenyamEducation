@@ -39,7 +39,6 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
 
   type DocxModule = { generateTestDOCX?: (id: string) => Promise<Buffer> }
   const mod: DocxModule | null = await (
-    // @ts-expect-error — module ships in a separate PR (integration/export); resolved at runtime
     import('@/lib/export/docx') as Promise<DocxModule>
   ).catch(() => null)
   if (!mod || typeof mod.generateTestDOCX !== 'function') {

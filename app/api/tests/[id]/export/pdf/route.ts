@@ -37,7 +37,6 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
 
   type PdfModule = { generateTestPDF?: (id: string) => Promise<Buffer> }
   const mod: PdfModule | null = await (
-    // @ts-expect-error — module ships in a separate PR (integration/export); resolved at runtime
     import('@/lib/export/pdf') as Promise<PdfModule>
   ).catch(() => null)
   if (!mod || typeof mod.generateTestPDF !== 'function') {
