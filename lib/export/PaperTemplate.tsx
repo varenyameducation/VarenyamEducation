@@ -1,5 +1,5 @@
 import * as React from 'react'
-import katex from 'katex'
+import { renderBodyHtml } from '@/lib/ui/render-body-core'
 import type { Branding } from './branding'
 
 // --- Brand palette (locked by orchestrator). Reads `brand_color_hex` from
@@ -55,19 +55,7 @@ export type PaperMeta = {
 }
 
 function renderKatex(source: string | null | undefined): string {
-  if (!source) return ''
-  const hasLatex = /\\[a-zA-Z]+|[\^_{}]|\$[^$]+\$/.test(source)
-  if (!hasLatex) return escapeHtml(source)
-  try {
-    return katex.renderToString(source, {
-      output: 'html',
-      throwOnError: false,
-      displayMode: false,
-      strict: 'ignore',
-    })
-  } catch {
-    return escapeHtml(source)
-  }
+  return renderBodyHtml(source)
 }
 
 // Render a body that may contain inline `[[IMG:<url>]]` placeholders plus
@@ -132,13 +120,6 @@ function renderBodyWithImages(source: string | null | undefined): string {
     i = j
   }
   return out.join('')
-}
-
-function escapeHtml(input: string): string {
-  return input
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
 }
 
 // Read brand color from branding row. Treat the legacy navy default and

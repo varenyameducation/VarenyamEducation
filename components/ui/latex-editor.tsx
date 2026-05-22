@@ -4,8 +4,8 @@ import * as React from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { StreamLanguage } from '@codemirror/language'
 import { stex } from '@codemirror/legacy-modes/mode/stex'
-import katex from 'katex'
 import 'katex/dist/katex.min.css'
+import { RenderedBody } from '@/lib/ui/render-body'
 import { cn } from '@/lib/utils'
 
 export interface LaTeXEditorProps {
@@ -16,12 +16,6 @@ export interface LaTeXEditorProps {
   className?: string
   id?: string
   'aria-invalid'?: boolean | 'true' | 'false'
-}
-
-const LATEX_TOKEN_PATTERN = /\\[a-zA-Z]+|[\$\^_{}]/
-
-function looksLikeLatex(src: string): boolean {
-  return LATEX_TOKEN_PATTERN.test(src)
 }
 
 const latexExtensions = [StreamLanguage.define(stex)]
@@ -42,30 +36,10 @@ export const LaTeXEditor = React.forwardRef<HTMLDivElement, LaTeXEditorProps>(
       }
     }, [value])
 
-    const rendered = React.useMemo(() => {
-      const src = deferredValue ?? ''
-      if (!src.trim()) {
-        return { html: null as string | null, error: null as string | null, plain: true }
-      }
-      if (!looksLikeLatex(src)) {
-        return { html: null, error: null, plain: true }
-      }
-      try {
-        const html = katex.renderToString(src, {
-          throwOnError: true,
-          displayMode: true,
-          output: 'html',
-          strict: 'ignore',
-        })
-        return { html, error: null, plain: false }
-      } catch (e: unknown) {
-        const message = e instanceof Error ? e.message : 'KaTeX parse error'
-        return { html: null, error: message, plain: false }
-      }
-    }, [deferredValue])
-
     const heightStyle =
       typeof minHeight === 'number' ? `${minHeight}px` : minHeight
+
+    const hasContent = (deferredValue ?? '').trim().length > 0
 
     return (
       <div
@@ -95,21 +69,14 @@ export const LaTeXEditor = React.forwardRef<HTMLDivElement, LaTeXEditorProps>(
         </div>
         <div
           aria-live="polite"
-          className={cn(
-            'min-h-[inherit] overflow-auto p-3 text-sm',
-            rendered.error && 'border-l-2 border-destructive bg-destructive/5',
-          )}
+          className="min-h-[inherit] overflow-auto p-3 text-sm"
           style={{ minHeight: heightStyle }}
         >
-          {rendered.error ? (
-            <p className="font-mono text-xs text-destructive">{rendered.error}</p>
-          ) : rendered.html ? (
-            <div
-              className="katex-preview"
-              dangerouslySetInnerHTML={{ __html: rendered.html }}
+          {hasContent ? (
+            <RenderedBody
+              className="katex-preview whitespace-pre-wrap"
+              body={deferredValue}
             />
-          ) : rendered.plain && deferredValue ? (
-            <p className="whitespace-pre-wrap text-foreground/80">{deferredValue}</p>
           ) : (
             <p className="text-muted-foreground">{placeholder ?? 'Live preview'}</p>
           )}

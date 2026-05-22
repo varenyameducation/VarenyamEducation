@@ -21,9 +21,8 @@ import katex from 'katex'
 import sharp from 'sharp'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
+import { splitBody } from '@/lib/ui/render-body-core'
 import { getInstituteBranding, getTestWithQuestions, type Branding, type TestWithQuestions } from './branding'
-
-const LATEX_HINT = /\\[a-zA-Z]+|\$[^$]+\$/
 
 const PNG_PIXEL_WIDTH = 600
 
@@ -89,27 +88,49 @@ export async function renderLatexToPng(latex: string): Promise<Buffer> {
     .toBuffer()
 }
 
+async function mathImageRun(latex: string): Promise<ParagraphChild | null> {
+  try {
+    const png = await renderLatexToPng(latex)
+    const meta = await sharp(png).metadata()
+    return new ImageRun({
+      type: 'png',
+      data: png,
+      transformation: {
+        width: Math.min(meta.width ?? PNG_PIXEL_WIDTH, PNG_PIXEL_WIDTH),
+        height: Math.min(meta.height ?? 40, 60),
+      },
+    })
+  } catch {
+    return null
+  }
+}
+
 async function inlineRuns(source: string | null | undefined): Promise<ParagraphChild[]> {
   if (!source) return []
-  if (!LATEX_HINT.test(source)) {
+  const segments = splitBody(source)
+  // No math/img segments → pass through as a single TextRun (preserves the
+  // exact whitespace the caller passed in).
+  if (segments.every((s) => s.kind === 'text')) {
     return [new TextRun(source)]
   }
-  try {
-    const png = await renderLatexToPng(source)
-    const meta = await sharp(png).metadata()
-    return [
-      new ImageRun({
-        type: 'png',
-        data: png,
-        transformation: {
-          width: Math.min(meta.width ?? PNG_PIXEL_WIDTH, PNG_PIXEL_WIDTH),
-          height: Math.min(meta.height ?? 40, 60),
-        },
-      }),
-    ]
-  } catch {
-    return [new TextRun(source)]
+  const runs: ParagraphChild[] = []
+  for (const seg of segments) {
+    if (seg.kind === 'text') {
+      if (seg.text.length > 0) runs.push(new TextRun(seg.text))
+    } else if (seg.kind === 'inline-math' || seg.kind === 'display-math') {
+      const run = await mathImageRun(seg.latex)
+      if (run) {
+        runs.push(run)
+      } else {
+        const fallback =
+          seg.kind === 'inline-math' ? `\\(${seg.latex}\\)` : `\\[${seg.latex}\\]`
+        runs.push(new TextRun(fallback))
+      }
+    }
+    // 'img' segments are unexpected here — buildBodyParagraphs strips them
+    // before calling inlineRuns. Skip just in case.
   }
+  return runs
 }
 
 const IMG_PLACEHOLDER_RE = /\[\[IMG:([^\]]+)\]\]/g
