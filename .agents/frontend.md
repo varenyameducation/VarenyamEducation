@@ -8,120 +8,95 @@
 git config user.email   # must be snehachoukseyobc@gmail.com
 ```
 
-## Current task — Resolve m2m PR conflict; consume joined-name fields
+## Current task — Paper polish: icon-only logo, smaller diagrams, no handwriting lines
 
-**Why:** The frontend M2M PR (`frontend/multitax-blueprint-paper`, 5 commits, already pushed) has a textual conflict with main in `lib/ui/api.ts` plus a deeper type mismatch:
+User feedback after smoke-testing the merged paper redesign:
 
-- FE built against a local mock `TaxonomyTag` in `@/lib/ui/mocks/m2m` that carries `course_name`, `chapter_name`, `topic_name`, `subject` (denormalized names for chip rendering).
-- INT + BE shipped a canonical `TaxonomyTagRow` in `@/types/taxonomy` that is ID-only.
+> "the pdf still is not nicely formatted the diagrams are really big and do not match the size if the ones in original PDF, the concept is to decrease the size of the images so it looks nicely formatted also no need to leave lines for any thing any answer, that is not required. logo should only be [the icon-only mark] not the entire name. tagline 'leading the way' is just for orchestrator's color-palette reference, otherwise on question paper only the logo has to be there on the side right now on the side it has both logo and name image. name has to be in centre only"
 
-INT has now landed `integration/joined-names-on-tag-row` (adds optional `course_name`/`chapter_name?`/`topic_name?`/`subject?` to `TaxonomyTagRow`). BE has landed `backend/joined-names-on-tag-row` (populates those fields on every `/api/questions` response). **Your job is to rebase, resolve the conflict, drop the mock TaxonomyTag type definition, and migrate all callsites to the canonical type.**
+Three targeted fixes on the existing paper templates. **No schema, no API, no taxonomy work.**
 
-**Branch:** `frontend/multitax-blueprint-paper` (existing — don't create a new one; rebase the existing branch).
+**Branch:** `frontend/paper-polish-icon-and-cap-and-no-lines`
 
-### Workflow at a glance
+**Base off:** `main`.
 
-1. `git fetch origin && git checkout frontend/multitax-blueprint-paper && git pull`
-2. `git rebase origin/main` — expect a conflict in `lib/ui/api.ts`. Resolve by taking main's side (the canonical interface) **and** dropping the legacy `course`/`chapter`/`topic` joined fields on `Question` (BE no longer returns them).
-3. Cascade-fix the consumer files (listed below).
-4. `npx tsc --noEmit` clean.
-5. `npx next build` (optional but recommended) to catch any runtime-only issues.
-6. Force-push the rebased branch: `git push --force-with-lease`.
-7. Append status entry; stop.
+### Fix 1 — Use icon-only logo mark (not the wordmark)
 
-### File-by-file changes
+The header currently embeds `public/brand/varenyam-logo-full.png` (the full "VARENYAM" wordmark with text + tagline). Replace with `public/brand/varenyam-logo-mark.png` (icon-only heart-shape mark, 250×230 RGBA — already replaced on this orchestrator branch with the correct icon-only file the user just sent).
 
-#### `lib/ui/api.ts`
+- `lib/export/PaperTemplate.tsx` — change `DEFAULT_LOGO_SRC` from `/brand/varenyam-logo-full.png` to `/brand/varenyam-logo-mark.png`.
+- `lib/export/docx.ts` — the ImageRun that reads `path.join(process.cwd(), 'public', 'brand', 'varenyam-logo-full.png')` (around line 62) — change to `varenyam-logo-mark.png`.
+- `lib/export/pdf.ts` — same path swap (around line 61).
 
-- Take main's side for both conflict hunks.
-- Final shape of the import:
-  ```ts
-  import type { TaxonomyTagRow } from '@/types/taxonomy'
-  ```
-- Final shape of `Question`:
-  ```ts
-  export interface Question {
-    id: string
-    subject: SubjectValue
-    ...
-    taxonomies: TaxonomyTagRow[]
-    // No more course/chapter/topic joined fields.
-  }
-  ```
+Size constraints on the rendered logo:
+- Cap rendered height at ~40-50px on the page (the mark is roughly square, so width ends up similar).
+- In docx.ts ImageRun `transformation`, target ~50×46 px (preserves the 250:230 aspect).
+- In PaperTemplate.tsx, the `logoImg` style needs `width: auto; height: 44px;` or similar.
 
-#### `lib/ui/mocks/m2m.ts`
+### Fix 2 — Institute name centered as TEXT (already is — confirm + clean)
 
-- Delete the local `export type TaxonomyTag = { course_id; course_name; ... }` definition.
-- Re-export from canonical:
-  ```ts
-  export type { TaxonomyTag, TaxonomyTagRow } from '@/types/taxonomy'
-  ```
-- `formatTagLabel(tag)` — change parameter type to `TaxonomyTagRow`. Read `tag.course_name`, `tag.chapter_name`, `tag.topic_name` (all now live on the canonical row when populated by BE). Fall back to the IDs (formatted as short strings) when names are missing — this keeps the function safe for locally-constructed rows that haven't round-tripped through the API yet.
-- `deriveQuestionTags(q)` — this used to fabricate a `TaxonomyTag` from the legacy `Question.course/chapter/topic` joined fields. Those are GONE on `Question`. **Delete `deriveQuestionTags` and all its callsites** — consumers should read `q.taxonomies` directly. If a callsite needs a "first tag" fallback for legacy untagged questions, use `q.taxonomies[0]` and gate the render with `q.taxonomies.length > 0`.
-- `MOCK_M2M_TAGS_BY_QUESTION` — update each mock row to be the canonical shape: `{ id, course_id, chapter_id?, topic_id?, exam_type, created_at, course_name, chapter_name?, topic_name?, subject? }`. Generate plausible `id`/`created_at` for the mocks (e.g. `crypto.randomUUID()` and `new Date().toISOString()` evaluated once at module load, or hard-coded fixtures).
-- `LegacyTaggedQuestion` type can be deleted (its only consumer was `deriveQuestionTags`).
+The current PaperTemplate / DOCX / PDF already place the institute name (`branding.inst_name`) as a centered text element in the header strip. **Confirm** this still works after the logo swap. The header should read:
 
-#### `components/questions/taxonomy-tag-picker.tsx`
+```
+[ icon ]                 Varenyam Coaching Institute                 [ blank/spacer ]
+─────────────────────────── brand-red 1px rule ───────────────────────────
+```
 
-- The component holds picker state. Internal `value: TaxonomyTag[]` from `@/types/taxonomy` should remain the input/output type (no names) — the picker BUILDS tags, doesn't render labels for tags-in-flight. For chip labels, take a parallel `taxonomyOptions: TaxonomyTagRow[]` prop that has names, or do a lookup against the in-context course/chapter/topic state that the parent already has.
-- Cleanest interface change: keep `value: TaxonomyTag[]` (canonical input shape, name-less) and add a `formatLabel?: (tag: TaxonomyTag) => string` callback prop that the parent supplies. Parent has access to its course/chapter/topic state and can format. Default the formatter to a fallback that prints `chapter_id ?? course_id`.
-- This is a real refactor — take care to keep the existing keyboard/blur behavior.
+Drop the tagline if the template currently renders one — the user does not want "Leading the way" or any tagline on the paper. Only `inst_name`.
 
-#### `components/questions/question-form.tsx`
+### Fix 3 — Shrink diagram caps to match reference paper
 
-- Update the `taxonomies` field state to be `TaxonomyTag[]` (without names — they get added by the server after POST). On form submit, you already POST `taxonomies` to `/api/questions`; the request body is unchanged. On form mount when editing an existing question, you read `q.taxonomies` which is now `TaxonomyTagRow[]` — strip the row's `id`/`created_at`/name fields before seeding the picker's state.
-- The legacy `course_id`/`chapter_id`/`topic_id`/`exam_type` top-level fields you held back as v1-compat should now be REMOVED from the form schema and submit body — BE only accepts `taxonomies` now.
+User says diagrams "are really big and do not match the size of the ones in original PDF." The reference DOCX renders inline figures around 150-180px wide (visually ~4cm on the printed page).
 
-#### `components/questions/bulk-retag-modal.tsx`
+Current caps:
+- `lib/export/docx.ts`: `DOC_IMAGE_MAX_W = 420`, `DOC_IMAGE_MAX_H = 150` — **width is way too big**.
+- `lib/export/PaperTemplate.tsx`: `max-width: 280px; max-height: 180px` per the prior brief — also too big.
 
-- Same picker integration treatment as the form. Internal state `tags: TaxonomyTag[]`.
+New caps:
+- `lib/export/docx.ts`: `DOC_IMAGE_MAX_W = 200`, `DOC_IMAGE_MAX_H = 140`.
+- `lib/export/PaperTemplate.tsx`: `max-width: 200px; max-height: 140px; object-fit: contain;` on every inline image and on the `[[IMG:url]]` placeholder render.
+- `lib/export/pdf.ts`: inherits from PaperTemplate via Puppeteer; no separate cap needed.
 
-#### `components/questions/question-card.tsx`
+Apply to both standalone images (the dedicated diagram paragraph under a question body) and inline placeholders inside the question body text.
 
-- Currently calls `deriveQuestionTags(q)` to get tags. Replace with `q.taxonomies`. Use `formatTagLabel(tag)` directly (now name-aware).
+### Fix 4 — Remove all handwriting / answer lines
 
-#### `app/(dashboard)/questions/[id]/page.tsx`
+The user explicitly does NOT want:
+- "Student Name: ______________" line in the header meta block — **delete**.
+- "Roll No.: ______________" line — **delete**.
+- Per-question dotted answer lines (the lines that scale by marks, "cap 6 lines") that the current PaperTemplate / DOCX renders below each question for handwritten answers — **delete entirely** in both PaperTemplate.tsx and docx.ts.
 
-- Same `deriveQuestionTags` → `q.taxonomies` swap. The header chip strip now reads server-provided names.
-- If this page reads `q.exam_type` anywhere, replace with `q.taxonomies[0]?.exam_type ?? '—'` or a de-duped list of all `taxonomies[].exam_type` values.
+The paper becomes a pure question-set output. Marks chip `[ N ]` stays. Options stay. Diagrams stay. Everything between questions that was for handwritten answers goes away. Adjust spacing so consecutive questions still have ~12pt breathing room.
 
-#### `app/(dashboard)/questions/[id]/edit/page.tsx`
+### What stays (do not touch)
 
-- Drops `import type { TaxonomyTag } from '@/lib/ui/mocks/m2m'` — switch to `@/types/taxonomy`.
-- The `seedTag` derivation that reads `q.course_id` etc. won't compile (`Question` no longer has these fields). Replace with `const seedTags = q.taxonomies` (already an array; pass directly to the form).
-
-#### `app/(dashboard)/questions/page.tsx`
-
-- Filters and grouping currently read `q.course?.id`/`q.chapter?.id`/`q.topic?.id`. These joined fields are gone. Switch to reading the **first** taxonomy tag for backward-compatible grouping (or, if you want to honor multi-tagging, group by every `(q, tag)` cross-product — note this in the status entry).
-- Filter sidebar still posts `course_id`/`chapter_id`/`topic_id`/`exam_type` as query params; that contract is unchanged.
-
-#### `app/(dashboard)/tests/new/page.tsx`
-
-- Imports `GenerateTestPayload` from `@/lib/ui/mocks/m2m` — this stays (mock module re-exports it). No change unless typecheck flags it.
+- Marking Scheme table on page 1 — keeps section / marks-per-Q / # of Q / total / Marks Obtained columns. The "Marks Obtained" column is for the GRADER, not the student, so it stays (it's a single empty grid cell, not a handwriting line).
+- Section banners (teal-filled, white bold uppercase). Keep.
+- General Instructions box. Keep.
+- 2-column MCQ grid. Keep.
+- Marks chip with brand-red pill border. Keep.
+- Footer (teal top-rule + `<footer_text> · <inst_name> · Page X of Y`). Keep.
 
 ### Validation
 
-- [ ] `npx tsc --noEmit` exit 0.
-- [ ] Smoke test by clicking through: question bank list → question detail → edit → bulk retag → test creator blueprint mode. (You can do this in dev — `npm run dev` — if you want, but typecheck-clean is the binding bar.)
+- [ ] `npx tsc --noEmit` clean from `/mnt/d/varenyam-fe`.
+- [ ] Generate a smoke test paper at `/api/tests/<id>/export/docx`, unzip and confirm:
+  - `word/media/` contains the **mark** PNG (smaller, ~30KB file size), not the wordmark (~216KB)
+  - No "Student Name" / "Roll No." / dotted-answer paragraphs in the document.xml
+  - Width attribute on `<wp:extent>` for inline figures fits the 200×140 px cap (approximately `cx="1905000" cy="1333500"` in EMUs at 96 DPI)
 
-### Push
+### Workflow
 
-- The branch is shared with origin (already pushed). After rebase you'll need a force push:
-  ```
-  git push --force-with-lease origin frontend/multitax-blueprint-paper
-  ```
-  Use `--force-with-lease`, NOT `--force` (so you don't clobber someone else's commits).
-
-### Status + report
-
-- Append to `.agents/status-frontend.md`: rebase note, files changed, commit list, force-push confirmation, PR URL (same one — `https://github.com/varenyameducation/VarenyamEducation/pull/<N>` if you know the number, otherwise the `pull/new/` URL the previous push printed).
-- Run `~/report.sh frontend "<one-line summary>"`.
-- **Stop.**
+1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, this brief.
+2. Work in `/mnt/d/varenyam-fe`. `git fetch origin && git checkout main && git pull && git checkout -b frontend/paper-polish-icon-and-cap-and-no-lines && npx prisma generate`.
+3. Make the 4 fixes. Single commit OK, or split if you prefer. Use `[FE]` prefix; **no Claude attribution**.
+4. Push. If credential-manager refuses from `/mnt/d/varenyam-fe`, commit locally and write a clear note in status — orchestrator will push from `/mnt/d/varenyam`.
+5. Append a status entry to `.agents/status-frontend.md` listing the 4 fixes, commit SHA(s), push URL, and confirmation that the smoke checklist above passes.
+6. **Stop.** Skip `~/report.sh`.
 
 ### Hard rules
 
-- Single PR. The existing FE PR gets force-pushed; do not open a new one.
-- Do not touch `types/taxonomy.ts` (INT's). Do not touch `app/api/**` (BE's).
-- Do not run `--force` without `--with-lease`.
-- No Claude attribution in commits.
-- If the typecheck reveals an additional FE file that reads the removed `q.course_id`/`q.exam_type` etc. fields and it is not in the list above, FIX it in the same PR — do not leave breakage. Note any genuinely-out-of-FE-scope files in the status entry (none expected — BE has cleaned its own routes already).
+- Single PR for the polish. Do not bundle unrelated cleanups.
+- Do not touch `app/api/**`, `types/**`, `prisma/**`, `lib/integrations/**`.
+- Do not touch the live-fetch picker or the Taxonomy Manager 4-tier UI. Those work; leave alone.
+- The icon-only PNG at `public/brand/varenyam-logo-mark.png` is the right file (250×230 transparent RGBA). Use it as-is — do not regenerate or downscale at build time; resize via the template's render config.
