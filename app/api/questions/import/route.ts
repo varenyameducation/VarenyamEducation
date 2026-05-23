@@ -13,7 +13,7 @@ import {
   parseQuestionsExcel,
   type ParsedRow,
 } from '@/lib/integrations/excel/parse-questions'
-import { extractDocxParagraphs } from '@/lib/integrations/document/extract-docx'
+import { extractDocx, extractDocxParagraphs, type DocxImage } from '@/lib/integrations/document/extract-docx'
 import { extractPdfParagraphs } from '@/lib/integrations/document/extract-pdf'
 import {
   parseQuestionsFromParagraphs,
@@ -159,17 +159,39 @@ async function handleDocumentImport(
   }
 
   let paragraphs: string[]
+  let docxImages: DocxImage[] = []
   try {
     const buf = Buffer.from(await file.arrayBuffer())
-    paragraphs = kind === 'docx'
-      ? await extractDocxParagraphs(buf)
-      : await extractPdfParagraphs(buf)
+    if (kind === 'docx') {
+      const full = await extractDocx(buf)
+      paragraphs = full.paragraphs
+      docxImages = full.images
+    } else {
+      paragraphs = await extractPdfParagraphs(buf)
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'extraction failed'
     return err(400, {
       code: 'EXTRACTION_FAILED',
       message: `Could not read ${kind.toUpperCase()} file: ${msg}`,
     })
+  }
+
+  // Upload referenced images to Supabase Storage and build a filename→URL map.
+  // Images that fail to upload are simply dropped from the placeholder set;
+  // the question body still imports without them.
+  const imageUrlByFilename = new Map<string, string>()
+  if (docxImages.length > 0) {
+    const supabase = createSupabaseServerClient()
+    const publicBase = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}`
+    for (const img of docxImages) {
+      const path = `imports/${auth.user.id}/${randomUUID()}-${img.filename}`
+      const { error: upErr } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .upload(path, img.data, { contentType: img.contentType, upsert: false })
+      if (upErr) continue
+      imageUrlByFilename.set(img.filename, `${publicBase}/${path}`)
+    }
   }
 
   const parsed = parseQuestionsFromParagraphs(paragraphs)
@@ -196,7 +218,14 @@ async function handleDocumentImport(
   let subjectiveCount = 0
 
   for (const q of parsed.questions) {
-    const candidate = buildCandidate(q, defaults)
+    // Replace [[IMG:filename]] placeholders with [[IMG:<url>]] so the renderer
+    // gets a direct URL, and collect those URLs into image_urls.
+    const { rewritten, urls } = rewriteImagePlaceholders(
+      q.question_body,
+      imageUrlByFilename,
+    )
+    const qForCreate = { ...q, question_body: rewritten }
+    const candidate = buildCandidate(qForCreate, defaults)
     const validated = questionCreateSchema.safeParse(candidate)
     if (!validated.success) {
       const issue = validated.error.issues[0]
@@ -228,7 +257,7 @@ async function handleDocumentImport(
           option_c: (v as { option_c: string }).option_c,
           option_d: (v as { option_d: string }).option_d,
           correct_option: ['A'],
-          image_urls: [],
+          image_urls: urls,
           tags: [],
           is_verified: false,
         },
@@ -250,7 +279,7 @@ async function handleDocumentImport(
           question_body: v.question_body,
           created_by: auth.user.id,
           correct_option: [],
-          image_urls: [],
+          image_urls: urls,
           tags: [],
           is_verified: false,
         },
@@ -301,6 +330,20 @@ async function handleDocumentImport(
     note:
       'MCQs imported with correct_option defaulted to "A" — review and correct in the Question Bank. Subjective questions imported as descriptive (answer in dashboard).',
   })
+}
+
+function rewriteImagePlaceholders(
+  body: string,
+  byFilename: Map<string, string>,
+): { rewritten: string; urls: string[] } {
+  const urls: string[] = []
+  const rewritten = body.replace(/\[\[IMG:([^\]]+)\]\]/g, (full, filename: string) => {
+    const url = byFilename.get(filename)
+    if (!url) return ''
+    urls.push(url)
+    return `[[IMG:${url}]]`
+  })
+  return { rewritten: rewritten.replace(/\s+/g, ' ').trim(), urls }
 }
 
 function buildCandidate(
