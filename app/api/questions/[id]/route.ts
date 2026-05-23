@@ -5,11 +5,37 @@ import { prisma } from '@/lib/db/prisma'
 import { err, ok } from '@/lib/api/response'
 import { logAudit } from '@/lib/auth/audit'
 import { isAuthFailure, isParseFailure, parseJsonBody, requireAuth } from '@/lib/api/taxonomy'
-import { getClientIp, updateQuestionSchema } from '@/lib/api/questions'
+import { getClientIp, updateQuestionSchema, type TaxonomyTag } from '@/lib/api/questions'
 
 const idSchema = z.string().uuid()
 
 type RouteContext = { params: { id: string } }
+
+type TaxonomyRow = {
+  id: string
+  course_id: string
+  chapter_id: string | null
+  topic_id: string | null
+  exam_type: string
+}
+
+const taxonomySelect = {
+  id: true,
+  course_id: true,
+  chapter_id: true,
+  topic_id: true,
+  exam_type: true,
+} as const
+
+function withTaxonomies<T extends { question_taxonomies: TaxonomyRow[] }>(question: T) {
+  const { question_taxonomies, ...rest } = question
+  return { ...rest, taxonomies: question_taxonomies }
+}
+
+// Treat two tags as the same row when course/chapter/topic/exam_type all match.
+function tagKey(t: { course_id: string; chapter_id: string | null; topic_id: string | null; exam_type: string }) {
+  return [t.course_id, t.chapter_id ?? '_', t.topic_id ?? '_', t.exam_type].join('|')
+}
 
 export async function GET(_request: NextRequest, { params }: RouteContext) {
   const auth = await requireAuth()
@@ -21,11 +47,12 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
 
   const question = await prisma.question.findFirst({
     where: { id: params.id, deleted_at: null },
+    include: { question_taxonomies: { select: taxonomySelect } },
   })
   if (!question) {
     return err(404, { code: 'QUESTION_NOT_FOUND', message: 'Question not found' })
   }
-  return ok(question)
+  return ok(withTaxonomies(question))
 }
 
 export async function PUT(request: NextRequest, { params }: RouteContext) {
@@ -38,6 +65,7 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
 
   const existing = await prisma.question.findFirst({
     where: { id: params.id, deleted_at: null },
+    include: { question_taxonomies: { select: taxonomySelect } },
   })
   if (!existing) {
     return err(404, { code: 'QUESTION_NOT_FOUND', message: 'Question not found' })
@@ -63,12 +91,8 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
     })
   }
   const data: Prisma.QuestionUncheckedUpdateInput = {
-    ...(input.course_id !== undefined ? { course_id: input.course_id ?? null } : {}),
-    ...(input.chapter_id !== undefined ? { chapter_id: input.chapter_id ?? null } : {}),
-    ...(input.topic_id !== undefined ? { topic_id: input.topic_id ?? null } : {}),
     ...(input.subject !== undefined ? { subject: input.subject } : {}),
     ...(input.difficulty !== undefined ? { difficulty: input.difficulty } : {}),
-    ...(input.exam_type !== undefined ? { exam_type: input.exam_type } : {}),
     ...(input.marks_correct !== undefined ? { marks_correct: input.marks_correct } : {}),
     ...(input.marks_negative !== undefined ? { marks_negative: input.marks_negative } : {}),
     ...(input.marks_partial !== undefined ? { marks_partial: input.marks_partial ?? null } : {}),
@@ -98,16 +122,52 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
     ...(input.is_verified !== undefined ? { is_verified: input.is_verified } : {}),
   }
 
-  const question = await prisma.question.update({
-    where: { id: params.id },
-    data,
+  // Compute the taxonomy diff: insert new, delete removed, leave matching alone.
+  // The input.taxonomies array is the desired full set when present.
+  const result = await prisma.$transaction(async (tx) => {
+    if (Object.keys(data).length > 0) {
+      await tx.question.update({ where: { id: params.id }, data })
+    }
+
+    if (input.taxonomies !== undefined) {
+      const desired = input.taxonomies as TaxonomyTag[]
+      const existingByKey = new Map(existing.question_taxonomies.map((t) => [tagKey(t), t]))
+      const desiredByKey = new Map(desired.map((t) => [tagKey(t), t]))
+
+      const toAdd = desired.filter((t) => !existingByKey.has(tagKey(t)))
+      const toRemoveIds = existing.question_taxonomies
+        .filter((t) => !desiredByKey.has(tagKey(t)))
+        .map((t) => t.id)
+
+      if (toRemoveIds.length > 0) {
+        await tx.questionTaxonomy.deleteMany({ where: { id: { in: toRemoveIds } } })
+      }
+      if (toAdd.length > 0) {
+        await tx.questionTaxonomy.createMany({
+          data: toAdd.map((t) => ({
+            question_id: params.id,
+            course_id: t.course_id,
+            chapter_id: t.chapter_id,
+            topic_id: t.topic_id,
+            exam_type: t.exam_type,
+          })),
+          skipDuplicates: true,
+        })
+      }
+    }
+
+    const updated = await tx.question.findUnique({
+      where: { id: params.id },
+      include: { question_taxonomies: { select: taxonomySelect } },
+    })
+    return updated!
   })
 
   await logAudit({
     user_id: auth.user.id,
     action: 'question.update',
     entity_type: 'question',
-    entity_id: question.id,
+    entity_id: result.id,
     meta: {
       actor_role: auth.payload.role,
       via: isCreator && !isAdmin ? 'creator' : 'admin',
@@ -116,7 +176,7 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
     ip_address: getClientIp(request),
   })
 
-  return ok(question)
+  return ok(withTaxonomies(result))
 }
 
 export async function DELETE(request: NextRequest, { params }: RouteContext) {

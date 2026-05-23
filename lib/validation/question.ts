@@ -19,14 +19,13 @@ export type DifficultyValue = z.infer<typeof difficultySchema>
 export type ExamTypeValue = z.infer<typeof examTypeSchema>
 export type QuestionTypeValue = z.infer<typeof questionTypeSchema>
 
-// ─── Server-side validation (used by /api/questions routes + Excel parser) ──
+// ─── Server-side validation (used by import flows + xlsx parser) ────────────
+// Note: course_id/chapter_id/topic_id/exam_type live in question_taxonomies now,
+// not on Question. The import routes attach a junction row separately after the
+// question is validated and inserted.
 const commonShape = {
-  course_id: uuidSchema,
-  chapter_id: uuidSchema,
-  topic_id: uuidSchema,
   subject: subjectSchema,
   difficulty: difficultySchema,
-  exam_type: examTypeSchema,
   marks_correct: z.number().positive(),
   marks_negative: z.number().min(0).default(0),
   question_body: z.string().min(10),

@@ -24,13 +24,26 @@ const matrixAnswerSchema = z.array(z.record(z.string(), z.array(z.string()))).mi
 
 const optionLetter = z.enum(OPTION_VALUES)
 
+// A single taxonomy tag attached to a question via the question_taxonomies junction.
+// A question can have many of these (multi-course, multi-exam, etc.).
+export const taxonomyTagSchema = z.object({
+  course_id: z.string().uuid(),
+  chapter_id: z.string().uuid().nullish().transform((v) => v ?? null),
+  topic_id: z.string().uuid().nullish().transform((v) => v ?? null),
+  exam_type: z.enum(EXAM_TYPE_VALUES),
+})
+
+export type TaxonomyTag = z.infer<typeof taxonomyTagSchema>
+
+const taxonomiesArraySchema = z
+  .array(taxonomyTagSchema)
+  .min(1, { message: 'At least one taxonomy tag is required' })
+  .max(50)
+
 const baseQuestionFields = {
-  course_id: z.string().uuid().nullish(),
-  chapter_id: z.string().uuid().nullish(),
-  topic_id: z.string().uuid().nullish(),
+  taxonomies: taxonomiesArraySchema,
   subject: z.string().trim().min(1).max(50),
   difficulty: z.enum(DIFFICULTY_VALUES),
-  exam_type: z.enum(EXAM_TYPE_VALUES),
   marks_correct: z.number().min(0).max(999).optional(),
   marks_negative: z.number().min(0).max(999).optional(),
   marks_partial: z.number().min(0).max(999).nullish(),
@@ -92,12 +105,10 @@ export const createQuestionSchema = z.discriminatedUnion('question_type', [
 export type CreateQuestionInput = z.infer<typeof createQuestionSchema>
 
 const baseUpdateFields = {
-  course_id: z.string().uuid().nullish(),
-  chapter_id: z.string().uuid().nullish(),
-  topic_id: z.string().uuid().nullish(),
+  // Full replacement set; if omitted, taxonomies are left unchanged.
+  taxonomies: taxonomiesArraySchema.optional(),
   subject: z.string().trim().min(1).max(50).optional(),
   difficulty: z.enum(DIFFICULTY_VALUES).optional(),
-  exam_type: z.enum(EXAM_TYPE_VALUES).optional(),
   marks_correct: z.number().min(0).max(999).optional(),
   marks_negative: z.number().min(0).max(999).optional(),
   marks_partial: z.number().min(0).max(999).nullish(),
@@ -126,13 +137,15 @@ export const updateQuestionSchema = z
 export type UpdateQuestionInput = z.infer<typeof updateQuestionSchema>
 
 export const listQuerySchema = z.object({
+  // taxonomy filters: these all filter via question_taxonomies (junction)
   course_id: z.string().uuid().optional(),
   chapter_id: z.string().uuid().optional(),
   topic_id: z.string().uuid().optional(),
+  exam_type: z.enum(EXAM_TYPE_VALUES).optional(),
+  // direct columns on Question
   subject: z.string().trim().min(1).max(50).optional(),
   question_type: z.enum(QUESTION_TYPE_VALUES).optional(),
   difficulty: z.enum(DIFFICULTY_VALUES).optional(),
-  exam_type: z.enum(EXAM_TYPE_VALUES).optional(),
   search: z.string().trim().min(1).max(200).optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(1000).default(20),
