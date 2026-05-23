@@ -2,6 +2,19 @@ import { type NextRequest } from 'next/server'
 import { randomUUID } from 'node:crypto'
 import { Prisma } from '@prisma/client'
 import { z } from 'zod'
+
+// Vercel's default function timeout is 10 s. PDF-Vision import does
+// pdfjs-dist page rendering (~3-5 s cold start) plus N Gemini Vision
+// calls paced 5 s apart (~8 s each), so even a 4-page paper easily
+// blows past 10 s and Vercel returns a 500 HTML page that the FE shows
+// as "Server returned non-JSON (HTTP 500)". DOCX multimodal Vision and
+// single-image Vision are smaller but can still spike past 10 s on
+// slow Gemini responses. 60 s is the Hobby plan ceiling and covers
+// papers up to ~8 pages. Bump to 300 on Pro for larger papers.
+export const maxDuration = 60
+// Pin Node runtime — pdfjs-dist, pdf-to-img, puppeteer-core all need
+// full Node APIs and would crash on edge.
+export const runtime = 'nodejs'
 import { prisma } from '@/lib/db/prisma'
 import { err, ok } from '@/lib/api/response'
 import { logAudit } from '@/lib/auth/audit'
