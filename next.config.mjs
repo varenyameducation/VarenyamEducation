@@ -19,6 +19,7 @@ const nextConfig = {
   //   - @napi-rs/canvas: ships per-platform `.node` binaries (Linux
   //     x64-gnu/musl, etc.) that Webpack has no loader for; the build
   //     fails with "Module parse failed: Unexpected character".
+  //   - @sparticuz/chromium / puppeteer-core: same .node-binary issue.
   // In Next 14 this key lives under `experimental` (renamed to top-level
   // `serverExternalPackages` in Next 15).
   experimental: {
@@ -26,7 +27,28 @@ const nextConfig = {
       'pdf-to-img',
       'pdfjs-dist',
       '@napi-rs/canvas',
+      '@sparticuz/chromium',
+      'puppeteer-core',
     ],
+    // Externalising tells Webpack "don't bundle", but Vercel's output
+    // file tracer also won't follow `require.resolve(...)` strings or
+    // platform-specific subpackages, so the deployed function ends up
+    // missing the externalised modules' files. Listing them here forces
+    // Vercel to include the entire package tree in each function's
+    // bundle that needs it.
+    outputFileTracingIncludes: {
+      '/api/questions/import': [
+        './node_modules/pdfjs-dist/**/*',
+        './node_modules/pdf-to-img/**/*',
+        './node_modules/@napi-rs/canvas/**/*',
+        './node_modules/@napi-rs/canvas-linux-x64-gnu/**/*',
+        './node_modules/@napi-rs/canvas-linux-x64-musl/**/*',
+      ],
+      '/api/tests/[id]/export/pdf': [
+        './node_modules/@sparticuz/chromium/**/*',
+        './node_modules/puppeteer-core/**/*',
+      ],
+    },
   },
 }
 
