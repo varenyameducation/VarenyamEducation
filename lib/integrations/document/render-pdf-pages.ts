@@ -1,10 +1,17 @@
 // Renders a PDF buffer to per-page PNG buffers via `pdf-to-img` (pdfjs-dist
-// under the hood, no native canvas dependency). Output PNGs feed into Gemini
-// Vision in the opt-in PDF Vision path at /api/questions/import.
+// under the hood). Output PNGs feed into Gemini Vision in the opt-in PDF
+// Vision path at /api/questions/import.
 //
 // Default scale is 2 (~150 DPI) — enough for board-paper math. When a page
 // exceeds Gemini's 5 MiB inline-image cap, we re-render at 1.5 then 1.0
 // before giving up.
+
+// MUST come before `pdf-to-img`: installs DOMMatrix / Path2D / ImageData
+// on globalThis so pdfjs-dist's top-level module evaluation doesn't crash
+// with `ReferenceError: DOMMatrix is not defined` on Vercel's Node 20
+// serverless runtime (Node doesn't expose these browser-only Canvas
+// APIs by default).
+import './pdfjs-node-polyfills'
 
 import { pdf } from 'pdf-to-img'
 import sharp from 'sharp'
