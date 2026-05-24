@@ -1,9 +1,9 @@
 import type {
   DifficultyValue,
-  ExamTypeValue,
   QuestionTypeValue,
   SubjectValue,
 } from '@/lib/validation/question'
+import type { TaxonomyTagRow } from '@/types/taxonomy'
 
 export interface ApiError {
   code: string
@@ -13,15 +13,16 @@ export interface ApiError {
 
 // Wire-format question record returned by /api/questions. Decimal columns
 // (marks_*, numerical_answer) arrive as strings after JSON serialization.
+//
+// Taxonomy (course / chapter / topic / exam_type) lives on the M2M
+// `taxonomies` array — a question can be tagged against multiple
+// course+chapter+topic combinations. Legacy untagged rows have an empty
+// array.
 export interface Question {
   id: string
-  course_id: string | null
-  chapter_id: string | null
-  topic_id: string | null
   subject: SubjectValue
   question_type: QuestionTypeValue
   difficulty: DifficultyValue
-  exam_type: ExamTypeValue
   marks_correct: number | string
   marks_negative: number | string
   marks_partial?: number | string | null
@@ -44,9 +45,7 @@ export interface Question {
   times_used: number
   created_at: string
   updated_at: string
-  course?: { id: string; name: string } | null
-  chapter?: { id: string; name: string } | null
-  topic?: { id: string; name: string } | null
+  taxonomies: TaxonomyTagRow[]
 }
 
 export interface Paginated<T> {
