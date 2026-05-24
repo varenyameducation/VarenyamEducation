@@ -14,6 +14,16 @@ export type SimilarMatch = {
   similarity: number
 }
 
+// Optional taxonomy filter. With the M2M `question_taxonomies` table a
+// question can be tagged against multiple courses, so duplicate-detection
+// scope is "any candidate that shares at least one of these tags". Caller
+// passes the course (or course+chapter) it cares about; we forward that to
+// the `question_taxonomies.some` join.
+export type FindSimilarOptions = {
+  course_id?: string | null
+  chapter_id?: string | null
+}
+
 // TODO: move to Postgres pg_trgm in a follow-up. JS scan is fine for the
 // current question-bank volume but won't scale past ~50k questions.
 const LATEX_COMMAND = /\\([a-zA-Z]+)\s*\{[^{}]*\}/g
@@ -53,16 +63,27 @@ export function trigramSimilarity(a: string, b: string): number {
   return union === 0 ? 0 : intersection / union
 }
 
+function buildWhere(options: FindSimilarOptions): Record<string, unknown> {
+  const where: Record<string, unknown> = { deleted_at: null }
+  if (options.course_id) {
+    const some: Record<string, unknown> = { course_id: options.course_id }
+    if (options.chapter_id) some.chapter_id = options.chapter_id
+    where.question_taxonomies = { some }
+  }
+  return where
+}
+
 export async function findSimilar(
   prisma: PrismaLike,
   body: string,
   threshold = 0.9,
+  options: FindSimilarOptions = {},
 ): Promise<SimilarMatch[]> {
   const target = normaliseForCompare(body)
   if (!target) return []
 
   const existing = await prisma.question.findMany({
-    where: { deleted_at: null },
+    where: buildWhere(options),
     select: { id: true, question_body: true },
   })
 
