@@ -75,6 +75,73 @@ export const setTestQuestionsSchema = z.object({
 
 export type SetTestQuestionsInput = z.infer<typeof setTestQuestionsSchema>
 
+// ─── Blueprint generation (POST /api/tests/generate) ────────────────────────
+
+export const TEST_BLUEPRINT_SUBJECT_VALUES = [
+  'Physics',
+  'Chemistry',
+  'Maths',
+  'Biology',
+] as const
+export const TEST_BLUEPRINT_EXAM_TYPE_VALUES = ['school', 'board', 'jee', 'neet'] as const
+export const QUESTION_TYPE_VALUES = [
+  'mcq',
+  'numerical',
+  'subjective',
+  'multi_select',
+  'matrix_match',
+] as const
+export const DIFFICULTY_VALUES = ['easy', 'medium', 'hard', 'advanced'] as const
+
+const blueprintCountsSchema = z
+  .object({
+    easy: z.number().int().min(0).max(500).optional(),
+    medium: z.number().int().min(0).max(500).optional(),
+    hard: z.number().int().min(0).max(500).optional(),
+    advanced: z.number().int().min(0).max(500).optional(),
+  })
+  .refine(
+    (v) =>
+      (v.easy ?? 0) + (v.medium ?? 0) + (v.hard ?? 0) + (v.advanced ?? 0) > 0,
+    { message: 'Section blueprint must request at least one question' },
+  )
+
+export const generateTestSchema = z.object({
+  title: z.string().trim().min(1).max(200),
+  course_id: z.string().uuid(),
+  subject: z.enum(TEST_BLUEPRINT_SUBJECT_VALUES),
+  exam_type: z.enum(TEST_BLUEPRINT_EXAM_TYPE_VALUES),
+  duration_minutes: z.number().int().min(1).max(600),
+  instructions: z.string().trim().max(5000).nullish(),
+  sections: z
+    .array(
+      z.object({
+        label: z.string().trim().min(1).max(50),
+        blueprint: blueprintCountsSchema,
+        chapter_ids: z.array(z.string().uuid()).max(200).optional(),
+        topic_ids: z.array(z.string().uuid()).max(500).optional(),
+        question_type: z.enum(QUESTION_TYPE_VALUES).optional(),
+      }),
+    )
+    .min(1)
+    .max(20),
+})
+
+export type GenerateTestInput = z.infer<typeof generateTestSchema>
+
+// ─── Inventory counts (GET /api/questions/inventory-counts) ─────────────────
+
+export const inventoryCountsQuerySchema = z.object({
+  course_id: z.string().uuid(),
+  exam_type: z.enum(TEST_BLUEPRINT_EXAM_TYPE_VALUES),
+  subject: z.enum(TEST_BLUEPRINT_SUBJECT_VALUES),
+  chapter_ids: z.array(z.string().uuid()).max(200).optional(),
+  topic_ids: z.array(z.string().uuid()).max(500).optional(),
+  question_type: z.enum(QUESTION_TYPE_VALUES).optional(),
+})
+
+export type InventoryCountsQuery = z.infer<typeof inventoryCountsQuerySchema>
+
 export function sanitizeTitleForFilename(title: string): string {
   return (
     title

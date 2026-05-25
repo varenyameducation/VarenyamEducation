@@ -255,13 +255,9 @@ async function handleDocumentImport(
       pending.push({
         questionNo: q.question_no,
         data: {
-          course_id: v.course_id,
-          chapter_id: v.chapter_id,
-          topic_id: v.topic_id,
           subject: v.subject,
           question_type: 'mcq',
           difficulty: v.difficulty,
-          exam_type: v.exam_type,
           marks_correct: v.marks_correct,
           marks_negative: v.marks_negative,
           question_body: v.question_body,
@@ -281,13 +277,9 @@ async function handleDocumentImport(
       pending.push({
         questionNo: q.question_no,
         data: {
-          course_id: v.course_id,
-          chapter_id: v.chapter_id,
-          topic_id: v.topic_id,
           subject: v.subject,
           question_type: 'subjective',
           difficulty: v.difficulty,
-          exam_type: v.exam_type,
           marks_correct: v.marks_correct,
           marks_negative: v.marks_negative,
           question_body: v.question_body,
@@ -304,10 +296,23 @@ async function handleDocumentImport(
   let imported = 0
   if (pending.length > 0) {
     try {
-      const created = await prisma.$transaction(
-        pending.map((p) => prisma.question.create({ data: p.data })),
-      )
-      imported = created.length
+      // Insert Question rows + 1 junction row per question, all in a single
+      // transaction so neither half can land alone.
+      await prisma.$transaction(async (tx) => {
+        for (const p of pending) {
+          const created = await tx.question.create({ data: p.data })
+          await tx.questionTaxonomy.create({
+            data: {
+              question_id: created.id,
+              course_id: defaults.course_id,
+              chapter_id: defaults.chapter_id,
+              topic_id: defaults.topic_id,
+              exam_type: defaults.exam_type,
+            },
+          })
+          imported += 1
+        }
+      })
     } catch (e) {
       const message = e instanceof Error ? e.message : 'unknown error'
       return err(500, {
@@ -366,12 +371,8 @@ function buildCandidate(
 ) {
   const marks = q.marks ?? defaults.marks_default
   const common = {
-    course_id: defaults.course_id,
-    chapter_id: defaults.chapter_id,
-    topic_id: defaults.topic_id,
     subject: defaults.subject,
     difficulty: defaults.difficulty,
-    exam_type: defaults.exam_type,
     marks_correct: marks,
     marks_negative: 0,
     question_body: q.question_body,
@@ -473,7 +474,18 @@ async function handleXlsxImport(
     topics.map((t) => [`${t.chapter_id}::${t.name}`, t.id] as const),
   )
 
-  type Pending = { rowNumber: number; data: Prisma.QuestionUncheckedCreateInput }
+  type Pending = {
+    rowNumber: number
+    data: Prisma.QuestionUncheckedCreateInput
+    // Junction row to attach to the question after insert. xlsx schema carries
+    // exactly one tag per row; future iterations can extend to many.
+    taxonomy: {
+      course_id: string
+      chapter_id: string
+      topic_id: string
+      exam_type: string
+    }
+  }
   const pending: Pending[] = []
   const uploadedPaths: string[] = []
   const supabase = imagesMap.size > 0 ? createSupabaseServerClient() : null
@@ -533,9 +545,6 @@ async function handleXlsxImport(
 
     const candidate = {
       ...row,
-      course_id: courseId,
-      chapter_id: chapterId,
-      topic_id: topicId,
       image_urls: imageUrls.length > 0 ? imageUrls : undefined,
     }
 
@@ -551,13 +560,9 @@ async function handleXlsxImport(
 
     const v = validated.data
     const data: Prisma.QuestionUncheckedCreateInput = {
-      course_id: v.course_id,
-      chapter_id: v.chapter_id,
-      topic_id: v.topic_id,
       subject: v.subject,
       question_type: v.question_type,
       difficulty: v.difficulty,
-      exam_type: v.exam_type,
       marks_correct: v.marks_correct,
       marks_negative: v.marks_negative,
       question_body: v.question_body,
@@ -584,16 +589,30 @@ async function handleXlsxImport(
       data.matrix_answer = v.matrix_answer as Prisma.InputJsonValue
     }
 
-    pending.push({ rowNumber, data })
+    pending.push({
+      rowNumber,
+      data,
+      taxonomy: {
+        course_id: courseId,
+        chapter_id: chapterId,
+        topic_id: topicId,
+        exam_type: row.exam_type,
+      },
+    })
   }
 
   let imported = 0
   if (pending.length > 0) {
     try {
-      const created = await prisma.$transaction(
-        pending.map((p) => prisma.question.create({ data: p.data })),
-      )
-      imported = created.length
+      await prisma.$transaction(async (tx) => {
+        for (const p of pending) {
+          const created = await tx.question.create({ data: p.data })
+          await tx.questionTaxonomy.create({
+            data: { question_id: created.id, ...p.taxonomy },
+          })
+          imported += 1
+        }
+      })
     } catch (e) {
       if (uploadedPaths.length > 0 && supabase) {
         await supabase.storage.from(STORAGE_BUCKET).remove(uploadedPaths).catch(() => {})

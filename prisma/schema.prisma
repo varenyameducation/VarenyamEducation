@@ -44,10 +44,10 @@ model Course {
   updated_at  DateTime  @updatedAt @db.Timestamptz
   deleted_at  DateTime? @db.Timestamptz
 
-  creator   User?     @relation(fields: [created_by], references: [id])
-  chapters  Chapter[]
-  questions Question[]
-  tests     Test[]
+  creator             User?                @relation(fields: [created_by], references: [id])
+  chapters            Chapter[]
+  question_taxonomies QuestionTaxonomy[]
+  tests               Test[]
 
   @@map("courses")
 }
@@ -64,10 +64,10 @@ model Chapter {
   updated_at DateTime  @updatedAt @db.Timestamptz
   deleted_at DateTime? @db.Timestamptz
 
-  course    Course     @relation(fields: [course_id], references: [id], onDelete: Cascade)
-  creator   User?      @relation(fields: [created_by], references: [id])
-  topics    Topic[]
-  questions Question[]
+  course              Course               @relation(fields: [course_id], references: [id], onDelete: Cascade)
+  creator             User?                @relation(fields: [created_by], references: [id])
+  topics              Topic[]
+  question_taxonomies QuestionTaxonomy[]
 
   @@index([course_id], name: "idx_chapters_course")
   @@map("chapters")
@@ -84,9 +84,9 @@ model Topic {
   updated_at DateTime  @updatedAt @db.Timestamptz
   deleted_at DateTime? @db.Timestamptz
 
-  chapter   Chapter    @relation(fields: [chapter_id], references: [id], onDelete: Cascade)
-  creator   User?      @relation(fields: [created_by], references: [id])
-  questions Question[]
+  chapter             Chapter              @relation(fields: [chapter_id], references: [id], onDelete: Cascade)
+  creator             User?                @relation(fields: [created_by], references: [id])
+  question_taxonomies QuestionTaxonomy[]
 
   @@index([chapter_id], name: "idx_topics_chapter")
   @@map("topics")
@@ -94,13 +94,9 @@ model Topic {
 
 model Question {
   id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  course_id        String?   @db.Uuid
-  chapter_id       String?   @db.Uuid
-  topic_id         String?   @db.Uuid
   subject          String
-  question_type    String    // 'mcq' | 'numerical' | 'matrix_match' | 'multi_select'
+  question_type    String    // 'mcq' | 'numerical' | 'matrix_match' | 'multi_select' | 'subjective'
   difficulty       String    // 'easy' | 'medium' | 'hard' | 'advanced'
-  exam_type        String    // 'school' | 'board' | 'jee' | 'neet'
   marks_correct    Decimal   @default(4) @db.Decimal(5, 2)
   marks_negative   Decimal   @default(0) @db.Decimal(5, 2)
   marks_partial    Decimal?  @db.Decimal(5, 2)
@@ -126,20 +122,37 @@ model Question {
   updated_at       DateTime  @updatedAt @db.Timestamptz
   deleted_at       DateTime? @db.Timestamptz
 
-  course         Course?        @relation(fields: [course_id], references: [id])
-  chapter        Chapter?       @relation(fields: [chapter_id], references: [id])
-  topic          Topic?         @relation(fields: [topic_id], references: [id])
-  creator        User?          @relation(fields: [created_by], references: [id])
-  test_questions TestQuestion[]
+  creator             User?                @relation(fields: [created_by], references: [id])
+  test_questions      TestQuestion[]
+  question_taxonomies QuestionTaxonomy[]
 
-  @@index([topic_id], name: "idx_q_topic")
-  @@index([chapter_id], name: "idx_q_chapter")
-  @@index([course_id], name: "idx_q_course")
   @@index([subject], name: "idx_q_subject")
   @@index([question_type], name: "idx_q_type")
   @@index([difficulty], name: "idx_q_difficulty")
-  @@index([exam_type], name: "idx_q_exam_type")
   @@map("questions")
+}
+
+model QuestionTaxonomy {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  question_id String   @db.Uuid
+  course_id   String   @db.Uuid
+  chapter_id  String?  @db.Uuid
+  topic_id    String?  @db.Uuid
+  exam_type   String   // 'school' | 'board' | 'jee' | 'neet'
+  created_at  DateTime @default(now()) @db.Timestamptz
+
+  question Question @relation(fields: [question_id], references: [id], onDelete: Cascade)
+  course   Course   @relation(fields: [course_id], references: [id])
+  chapter  Chapter? @relation(fields: [chapter_id], references: [id])
+  topic    Topic?   @relation(fields: [topic_id], references: [id])
+
+  @@unique([question_id, course_id, chapter_id, topic_id, exam_type])
+  @@index([course_id])
+  @@index([chapter_id])
+  @@index([topic_id])
+  @@index([question_id])
+  @@index([exam_type])
+  @@map("question_taxonomies")
 }
 
 model Test {
@@ -179,7 +192,7 @@ model TestQuestion {
   negative_override Decimal? @db.Decimal(5, 2)
 
   test     Test     @relation(fields: [test_id], references: [id], onDelete: Cascade)
-  question Question @relation(fields: [question_id], references: [id])
+  question Question @relation(fields: [question_id], references: [id], onDelete: Cascade)
 
   @@unique([test_id, position])
   @@index([test_id], name: "idx_tq_test_id")

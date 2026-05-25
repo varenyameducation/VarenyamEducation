@@ -73,7 +73,10 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
   }
 
   const questionCount = await prisma.question.count({
-    where: { topic_id: params.id, deleted_at: null },
+    where: {
+      deleted_at: null,
+      question_taxonomies: { some: { topic_id: params.id } },
+    },
   })
   if (questionCount > 0) {
     return err(409, {

@@ -1,10 +1,19 @@
 import * as XLSX from 'xlsx'
-import { questionBaseSchema, type QuestionBaseInput } from '@/lib/validation/question'
+import {
+  examTypeSchema,
+  questionBaseSchema,
+  type ExamTypeValue,
+  type QuestionBaseInput,
+} from '@/lib/validation/question'
 
 export type ParsedRow = QuestionBaseInput & {
   course_name: string
   chapter_name: string
   topic_name: string
+  // exam_type travels with the row but is written to question_taxonomies, not
+  // to Question. The /api/questions/import route attaches one junction row
+  // per question after validating the rest of the columns.
+  exam_type: ExamTypeValue
   image_filename?: string
 }
 
@@ -87,14 +96,19 @@ export function parseQuestionsExcel(buffer: Buffer | ArrayBuffer): ParseResult {
       return
     }
 
+    const examTypeParsed = examTypeSchema.safeParse(trimStr(record.exam_type))
+    if (!examTypeParsed.success) {
+      errors.push({
+        row: rowNumber,
+        reason: `exam_type: ${examTypeParsed.error.issues[0]?.message ?? 'invalid value'}`,
+      })
+      return
+    }
+
     const candidate = {
-      course_id: '00000000-0000-0000-0000-000000000000',
-      chapter_id: '00000000-0000-0000-0000-000000000000',
-      topic_id: '00000000-0000-0000-0000-000000000000',
       subject: trimStr(record.subject) as unknown,
       question_type: trimStr(record.question_type) as unknown,
       difficulty: trimStr(record.difficulty) as unknown,
-      exam_type: trimStr(record.exam_type) as unknown,
       marks_correct: toNumber(record.marks_correct) ?? 0,
       marks_negative: toNumber(record.marks_negative) ?? 0,
       question_body: trimStr(record.question_body) ?? '',
@@ -123,6 +137,7 @@ export function parseQuestionsExcel(buffer: Buffer | ArrayBuffer): ParseResult {
       course_name: courseName,
       chapter_name: chapterName,
       topic_name: topicName,
+      exam_type: examTypeParsed.data,
       image_filename: trimStr(record.image_filename),
     })
   })
