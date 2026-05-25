@@ -71,6 +71,92 @@ async function inlineRuns(source: string | null | undefined): Promise<ParagraphC
   }
 }
 
+const IMG_PLACEHOLDER_RE = /\[\[IMG:([^\]]+)\]\]/g
+const DOC_IMAGE_MAX_W = 420
+
+async function fetchImageBuffer(url: string): Promise<Buffer | null> {
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return null
+    return Buffer.from(await res.arrayBuffer())
+  } catch {
+    return null
+  }
+}
+
+async function imageParagraph(url: string): Promise<Paragraph | null> {
+  const buf = await fetchImageBuffer(url)
+  if (!buf) return null
+  try {
+    const png = await sharp(buf).png().toBuffer()
+    const meta = await sharp(png).metadata()
+    const w0 = meta.width ?? DOC_IMAGE_MAX_W
+    const h0 = meta.height ?? Math.round(DOC_IMAGE_MAX_W * 0.6)
+    const scale = w0 > DOC_IMAGE_MAX_W ? DOC_IMAGE_MAX_W / w0 : 1
+    return new Paragraph({
+      spacing: { before: 80, after: 80 },
+      children: [
+        new ImageRun({
+          type: 'png',
+          data: png,
+          transformation: {
+            width: Math.round(w0 * scale),
+            height: Math.round(h0 * scale),
+          },
+        }),
+      ],
+    })
+  } catch {
+    return null
+  }
+}
+
+// Split a body that may contain `[[IMG:url]]` placeholders into a sequence of
+// paragraphs: text segments become Paragraphs whose runs go through KaTeX,
+// images become their own Paragraph with an ImageRun.
+async function buildBodyParagraphs(
+  body: string | null | undefined,
+): Promise<Paragraph[]> {
+  if (!body) return []
+  const out: Paragraph[] = []
+  IMG_PLACEHOLDER_RE.lastIndex = 0
+  let last = 0
+  let m: RegExpExecArray | null
+  let sawImg = false
+  while ((m = IMG_PLACEHOLDER_RE.exec(body))) {
+    sawImg = true
+    if (m.index > last) {
+      const seg = body.slice(last, m.index)
+      if (seg.trim()) {
+        out.push(new Paragraph({ children: await inlineRuns(seg) }))
+      }
+    }
+    const imgP = await imageParagraph(m[1])
+    if (imgP) {
+      out.push(imgP)
+    } else {
+      out.push(
+        new Paragraph({
+          children: [
+            new TextRun({ text: '[image]', italics: true, color: '888888' }),
+          ],
+        }),
+      )
+    }
+    last = IMG_PLACEHOLDER_RE.lastIndex
+  }
+  if (!sawImg) {
+    return [new Paragraph({ children: await inlineRuns(body) })]
+  }
+  if (last < body.length) {
+    const seg = body.slice(last)
+    if (seg.trim()) {
+      out.push(new Paragraph({ children: await inlineRuns(seg) }))
+    }
+  }
+  return out
+}
+
 function brandColorHex(branding: Branding): string {
   return branding.brand_color_hex.replace(/^#/, '')
 }
@@ -152,8 +238,8 @@ async function buildQuestionParagraphs(
       }),
     )
 
-    const bodyRuns = await inlineRuns(q.question_body)
-    paragraphs.push(new Paragraph({ children: bodyRuns }))
+    const bodyParagraphs = await buildBodyParagraphs(q.question_body)
+    paragraphs.push(...bodyParagraphs)
 
     if (q.question_type === 'mcq' || q.question_type === 'multi_select') {
       for (const letter of ['a', 'b', 'c', 'd'] as const) {
