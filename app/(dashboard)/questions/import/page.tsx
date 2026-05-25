@@ -200,6 +200,10 @@ export default function ImportQuestionsPage() {
             <legend className="px-1 text-xs font-semibold uppercase text-muted-foreground">
               Defaults for all imported questions
             </legend>
+            <p className="text-xs text-muted-foreground">
+              These tags will be applied to every imported question. You can add
+              more tags later in bulk from the question bank.
+            </p>
             <div className="grid gap-4 md:grid-cols-3">
               <div className="space-y-2">
                 <Label htmlFor="course_id">Course</Label>

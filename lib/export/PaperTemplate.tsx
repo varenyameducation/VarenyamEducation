@@ -4,6 +4,10 @@ import type { Branding } from './branding'
 
 const OPTION_LETTERS = ['A', 'B', 'C', 'D'] as const
 
+const COLOR_TEXT = '#1a1a1a'
+const COLOR_MUTED = '#666'
+const COLOR_LINE = '#bbb'
+
 export type PaperQuestion = {
   id: string
   question_type: string
@@ -50,25 +54,70 @@ function renderKatex(source: string | null | undefined): string {
 }
 
 // Render a body that may contain inline `[[IMG:<url>]]` placeholders plus
-// LaTeX-ish text. Produces a single HTML string ready for
-// dangerouslySetInnerHTML. Images use a hard max-height so they don't blow
-// out the page layout in the PDF.
+// LaTeX-ish text. Adjacent image placeholders (no text between them, or only
+// whitespace) render in a centered flex row so two narrow figures can sit
+// side-by-side when they fit; otherwise they stack naturally. Each image is
+// capped at 4cm tall so a single figure cannot eat the page.
 function renderBodyWithImages(source: string | null | undefined): string {
   if (!source) return ''
-  const parts: string[] = []
   const re = /\[\[IMG:([^\]]+)\]\]/g
+  // Tokenize into a sequence of {text} and {img} parts.
+  type Part = { kind: 'text'; value: string } | { kind: 'img'; url: string }
+  const parts: Part[] = []
   let last = 0
   let m: RegExpExecArray | null
   while ((m = re.exec(source))) {
-    if (m.index > last) parts.push(renderKatex(source.slice(last, m.index)))
-    const url = m[1].replace(/"/g, '&quot;')
-    parts.push(
-      `<img src="${url}" alt="" style="display:block;max-width:100%;max-height:200px;margin:6px 0;" />`,
-    )
+    if (m.index > last) parts.push({ kind: 'text', value: source.slice(last, m.index) })
+    parts.push({ kind: 'img', url: m[1] })
     last = re.lastIndex
   }
-  if (last < source.length) parts.push(renderKatex(source.slice(last)))
-  return parts.join('')
+  if (last < source.length) parts.push({ kind: 'text', value: source.slice(last) })
+
+  const out: string[] = []
+  let i = 0
+  while (i < parts.length) {
+    const p = parts[i]
+    if (p.kind === 'text') {
+      out.push(renderKatex(p.value))
+      i++
+      continue
+    }
+    // Collect a run of adjacent images (allowing whitespace-only text between).
+    const urls: string[] = [p.url]
+    let j = i + 1
+    while (j < parts.length) {
+      const next = parts[j]
+      if (next.kind === 'img') {
+        urls.push(next.url)
+        j++
+        continue
+      }
+      // text part — only swallow if pure whitespace
+      if (next.value.trim() === '') {
+        j++
+        continue
+      }
+      break
+    }
+    if (urls.length === 1) {
+      const url = urls[0].replace(/"/g, '&quot;')
+      out.push(
+        `<img src="${url}" alt="" style="display:block;max-width:100%;max-height:4cm;margin:4mm auto;" />`,
+      )
+    } else {
+      const inner = urls
+        .map(
+          (u) =>
+            `<img src="${u.replace(/"/g, '&quot;')}" alt="" style="max-width:100%;max-height:4cm;display:block;" />`,
+        )
+        .join('')
+      out.push(
+        `<div style="display:flex;gap:8mm;justify-content:center;align-items:flex-end;flex-wrap:wrap;margin:4mm 0;">${inner}</div>`,
+      )
+    }
+    i = j
+  }
+  return out.join('')
 }
 
 function escapeHtml(input: string): string {
@@ -80,6 +129,19 @@ function escapeHtml(input: string): string {
 
 function brandColor(hex: string): string {
   return hex.startsWith('#') ? hex : `#${hex}`
+}
+
+function tintedFromBrand(hex: string): string {
+  // Produce a very light tint of the brand color for the instruction box
+  // background. Falls back to a neutral grey-blue if hex parse fails.
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex)
+  if (!m) return '#f4f6fa'
+  const r = parseInt(m[1].slice(0, 2), 16)
+  const g = parseInt(m[1].slice(2, 4), 16)
+  const b = parseInt(m[1].slice(4, 6), 16)
+  // Mix 8% brand into white.
+  const mix = (c: number) => Math.round(c * 0.08 + 255 * 0.92)
+  return `rgb(${mix(r)}, ${mix(g)}, ${mix(b)})`
 }
 
 function examTypeLabel(t: string | null | undefined): string | null {
@@ -101,84 +163,177 @@ function groupBySection(rows: PaperRow[]): { label: string | null; rows: PaperRo
   return groups
 }
 
+function sectionBlueprintSummary(
+  rows: PaperRow[],
+  startIndex: number,
+): string {
+  if (rows.length === 0) return ''
+  const endIndex = startIndex + rows.length - 1
+  const marksList = rows.map((r) =>
+    Number(r.marks_override ?? r.question.marks_correct) || 0,
+  )
+  const total = marksList.reduce((a, b) => a + b, 0)
+  const uniform = marksList.every((m) => m === marksList[0]) ? marksList[0] : null
+  const range = startIndex === endIndex ? `Q${startIndex}` : `Q${startIndex}–Q${endIndex}`
+  if (uniform != null) {
+    return `(${range} · ${rows.length} × ${uniform} = ${total} marks)`
+  }
+  return `(${range} · ${rows.length} questions · ${total} marks)`
+}
+
+function answerLineCount(qtype: string, marks: number): number {
+  if (qtype === 'numerical') return 1
+  if (qtype === 'matrix_match') return 0
+  // 2 lines per mark, capped between 2 and 6.
+  const lines = Math.ceil(marks * 2)
+  return Math.min(6, Math.max(2, lines))
+}
+
 const styles = {
   page: {
     fontFamily: "'Times New Roman', 'Liberation Serif', serif",
-    color: '#111',
+    color: COLOR_TEXT,
     fontSize: 12,
-    lineHeight: 1.5,
+    lineHeight: 1.45,
   } as React.CSSProperties,
-  brandBar: (color: string) =>
+  // Header layout: logo | name+tagline | roll/name stub
+  headerRow: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  } as React.CSSProperties,
+  logoSlot: {
+    width: '24mm',
+    minWidth: '24mm',
+    height: '24mm',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  } as React.CSSProperties,
+  logoImg: {
+    maxWidth: '24mm',
+    maxHeight: '24mm',
+    objectFit: 'contain' as const,
+  } as React.CSSProperties,
+  logoPlaceholder: (color: string) =>
     ({
-      borderBottom: `2px solid ${color}`,
-      paddingBottom: 8,
-      marginBottom: 10,
+      width: '24mm',
+      height: '24mm',
+      border: `1px dashed ${color}`,
+      color,
+      fontSize: 9,
+      letterSpacing: 1,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      fontWeight: 600,
     }) as React.CSSProperties,
+  brandCenter: {
+    flex: 1,
+    textAlign: 'center' as const,
+    paddingTop: 2,
+  } as React.CSSProperties,
   instName: (color: string) =>
     ({
-      fontSize: 20,
+      fontSize: 18,
       fontWeight: 700,
       color,
-      textAlign: 'center',
-      letterSpacing: 0.5,
+      letterSpacing: 0.6,
+      lineHeight: 1.1,
     }) as React.CSSProperties,
   tagline: {
     fontSize: 11,
-    textAlign: 'center',
-    color: '#555',
+    fontStyle: 'italic' as const,
+    color: COLOR_MUTED,
     marginTop: 2,
   } as React.CSSProperties,
-  metaTable: {
-    width: '100%',
-    borderCollapse: 'collapse',
-    marginTop: 6,
-    fontSize: 12,
+  rollStub: (color: string) =>
+    ({
+      width: '32mm',
+      minWidth: '32mm',
+      border: `1px solid ${color}`,
+      fontSize: 9,
+      color: COLOR_TEXT,
+    }) as React.CSSProperties,
+  rollRow: {
+    padding: '4px 6px',
+    minHeight: '8mm',
   } as React.CSSProperties,
-  metaCell: {
-    padding: '2px 4px',
+  brandDivider: (color: string) =>
+    ({
+      borderTop: `2px solid ${color}`,
+      margin: '6px 0 10px',
+    }) as React.CSSProperties,
+  metaRow: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr 1fr',
+    columnGap: 12,
+    fontSize: 11,
+    marginBottom: 4,
   } as React.CSSProperties,
-  title: {
-    textAlign: 'center',
-    fontSize: 15,
-    fontWeight: 700,
-    margin: '8px 0 4px',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  } as React.CSSProperties,
-  rule: {
-    border: 'none',
-    borderTop: '1px solid #888',
-    margin: '8px 0',
-  } as React.CSSProperties,
+  metaLeft: { textAlign: 'left' as const } as React.CSSProperties,
+  metaCenter: { textAlign: 'center' as const } as React.CSSProperties,
+  metaRight: { textAlign: 'right' as const } as React.CSSProperties,
+  title: (color: string) =>
+    ({
+      textAlign: 'center' as const,
+      fontSize: 14,
+      fontWeight: 700,
+      margin: '8px 0 0',
+      textTransform: 'uppercase' as const,
+      letterSpacing: 0.6,
+      paddingBottom: 4,
+      borderBottom: `1px solid ${color}`,
+      width: 'fit-content',
+      marginLeft: 'auto',
+      marginRight: 'auto',
+    }) as React.CSSProperties,
   instructionsBox: (color: string) =>
     ({
       borderLeft: `3px solid ${color}`,
-      background: '#f6f7fb',
+      background: tintedFromBrand(color),
       padding: '6px 10px',
-      margin: '8px 0',
+      margin: '10px 0',
       fontSize: 11,
     }) as React.CSSProperties,
-  instructionsTitle: {
-    fontSize: 11,
-    fontWeight: 700,
-    textTransform: 'uppercase',
-    letterSpacing: 0.3,
-    marginBottom: 2,
-  } as React.CSSProperties,
-  sectionHeader: (color: string) =>
+  instructionsTitle: (color: string) =>
     ({
-      marginTop: 14,
-      paddingBottom: 4,
-      borderBottom: `1px solid ${color}`,
-      color,
+      fontSize: 10,
       fontWeight: 700,
-      fontSize: 13,
-      textAlign: 'center' as const,
       textTransform: 'uppercase' as const,
-      letterSpacing: 0.6,
+      letterSpacing: 0.4,
+      color,
+      marginBottom: 2,
     }) as React.CSSProperties,
+  sectionWrap: {
+    margin: '14px 0 6px',
+    textAlign: 'center' as const,
+  } as React.CSSProperties,
+  sectionRule: (color: string) =>
+    ({
+      borderTop: `1px solid ${color}`,
+      margin: '0 0 4px',
+    }) as React.CSSProperties,
+  sectionBar: (color: string) =>
+    ({
+      display: 'inline-block',
+      background: color,
+      color: '#fff',
+      padding: '3px 14px',
+      fontSize: 12,
+      fontWeight: 700,
+      textTransform: 'uppercase' as const,
+      letterSpacing: 0.8,
+    }) as React.CSSProperties,
+  sectionBlueprint: {
+    fontSize: 10,
+    color: COLOR_MUTED,
+    marginTop: 3,
+    fontStyle: 'italic' as const,
+  } as React.CSSProperties,
   question: {
-    marginTop: 10,
+    marginTop: 8,
     pageBreakInside: 'avoid',
   } as React.CSSProperties,
   qHead: {
@@ -189,62 +344,105 @@ const styles = {
   } as React.CSSProperties,
   qNumber: {
     fontWeight: 700,
-    minWidth: 28,
+    minWidth: '11mm',
+    fontFamily: "'Courier New', 'Liberation Mono', monospace",
+    fontSize: 11.5,
   } as React.CSSProperties,
   qMarks: {
-    fontSize: 11,
-    color: '#444',
-    whiteSpace: 'nowrap',
+    fontSize: 10,
+    color: COLOR_MUTED,
+    whiteSpace: 'nowrap' as const,
   } as React.CSSProperties,
-  qBody: {
-    marginLeft: 28,
-    marginTop: 2,
+  qBodyWrap: {
+    flex: 1,
+    paddingLeft: 2,
   } as React.CSSProperties,
   optionsGrid: {
     display: 'grid',
     gridTemplateColumns: '1fr 1fr',
-    gap: '2px 16px',
-    marginLeft: 28,
+    columnGap: 16,
+    rowGap: 2,
+    marginLeft: '11mm',
     marginTop: 4,
   } as React.CSSProperties,
-  option: {
-    fontSize: 12,
-  } as React.CSSProperties,
+  option: { fontSize: 12 } as React.CSSProperties,
   answerLine: {
-    borderBottom: '1px dotted #888',
+    borderBottom: `1px dotted ${COLOR_LINE}`,
     height: 18,
-    marginTop: 6,
-    marginLeft: 28,
+    marginTop: 5,
+    marginLeft: '11mm',
   } as React.CSSProperties,
-  footer: {
-    marginTop: 20,
-    paddingTop: 6,
-    borderTop: '1px solid #aaa',
-    fontSize: 10,
-    color: '#666',
-    textAlign: 'center',
-  } as React.CSSProperties,
+}
+
+function HeaderBlock({ branding, accent }: { branding: Branding; accent: string }) {
+  return (
+    <>
+      <div style={styles.headerRow}>
+        <div style={styles.logoSlot}>
+          {branding.logo_url ? (
+            <img src={branding.logo_url} alt="logo" style={styles.logoImg} />
+          ) : (
+            <div style={styles.logoPlaceholder(accent)}>LOGO</div>
+          )}
+        </div>
+        <div style={styles.brandCenter}>
+          <div style={styles.instName(accent)}>{branding.inst_name}</div>
+          {branding.tagline ? <div style={styles.tagline}>{branding.tagline}</div> : null}
+        </div>
+        <div style={styles.rollStub(accent)}>
+          <div style={{ ...styles.rollRow, borderBottom: `1px solid ${accent}` }}>
+            <strong>Roll No.</strong>
+          </div>
+          <div style={styles.rollRow}>
+            <strong>Name</strong>
+          </div>
+        </div>
+      </div>
+      <div style={styles.brandDivider(accent)} />
+    </>
+  )
+}
+
+function MetaBlock({ meta, accent }: { meta: PaperMeta; accent: string }) {
+  const examLabel = examTypeLabel(meta.exam_type)
+  const centerBits: string[] = []
+  if (meta.subject) centerBits.push(`Subject: ${meta.subject}`)
+  if (examLabel) centerBits.push(`Exam: ${examLabel}`)
+  return (
+    <>
+      <div style={styles.metaRow}>
+        <div style={styles.metaLeft}>
+          {meta.course_name ? <span><strong>Course:</strong> {meta.course_name}</span> : null}
+        </div>
+        <div style={styles.metaCenter}>
+          {centerBits.length > 0 ? <span>{centerBits.join(' · ')}</span> : null}
+        </div>
+        <div style={styles.metaRight}>
+          <strong>Duration:</strong> {meta.duration_minutes} min
+          {' · '}
+          <strong>Max Marks:</strong> {meta.total_marks}
+        </div>
+      </div>
+      <div style={styles.title(accent)}>{meta.title || 'Untitled Test'}</div>
+    </>
+  )
 }
 
 function QuestionRow({ index, row }: { index: number; row: PaperRow }) {
   const q = row.question
   const marks = row.marks_override ?? q.marks_correct
+  const marksNum = Number(marks) || 0
   const isMcq = q.question_type === 'mcq' || q.question_type === 'multi_select'
-  const nonMcqAnswerLines =
-    q.question_type === 'numerical'
-      ? 1
-      : q.question_type === 'matrix_match'
-        ? 0
-        : Math.min(4, Math.max(2, Math.ceil(Number(marks) || 1)))
+  const lines = answerLineCount(q.question_type, marksNum)
 
   return (
     <div style={styles.question}>
       <div style={styles.qHead}>
-        <div style={{ display: 'flex', gap: 4, flex: 1 }}>
+        <div style={{ display: 'flex', flex: 1, gap: 4 }}>
           <span style={styles.qNumber}>Q{index}.</span>
           <span
+            style={styles.qBodyWrap}
             dangerouslySetInnerHTML={{ __html: renderBodyWithImages(q.question_body) }}
-            style={{ flex: 1 }}
           />
         </div>
         <span style={styles.qMarks}>[{String(marks)}]</span>
@@ -265,7 +463,7 @@ function QuestionRow({ index, row }: { index: number; row: PaperRow }) {
           })}
         </div>
       ) : (
-        Array.from({ length: nonMcqAnswerLines }).map((_, i) => (
+        Array.from({ length: lines }).map((_, i) => (
           <div key={i} style={styles.answerLine} />
         ))
       )}
@@ -284,46 +482,15 @@ export function PaperTemplate({
 }) {
   const accent = brandColor(branding.brand_color_hex)
   const groups = groupBySection(rows)
-  const examLabel = examTypeLabel(meta.exam_type)
 
   return (
     <div style={styles.page}>
-      <div style={styles.brandBar(accent)}>
-        <div style={styles.instName(accent)}>{branding.inst_name}</div>
-        {branding.tagline ? <div style={styles.tagline}>{branding.tagline}</div> : null}
-      </div>
-
-      <table style={styles.metaTable}>
-        <tbody>
-          <tr>
-            <td style={styles.metaCell}>
-              {meta.course_name ? <><strong>Course:</strong> {meta.course_name}</> : null}
-            </td>
-            <td style={{ ...styles.metaCell, textAlign: 'right' }}>
-              <strong>Time:</strong> {meta.duration_minutes} min
-            </td>
-          </tr>
-          <tr>
-            <td style={styles.metaCell}>
-              {meta.subject ? <><strong>Subject:</strong> {meta.subject}</> : null}
-              {examLabel ? (
-                <span style={{ marginLeft: 12 }}>
-                  <strong>Exam:</strong> {examLabel}
-                </span>
-              ) : null}
-            </td>
-            <td style={{ ...styles.metaCell, textAlign: 'right' }}>
-              <strong>Maximum Marks:</strong> {meta.total_marks}
-            </td>
-          </tr>
-        </tbody>
-      </table>
-
-      <div style={styles.title}>{meta.title || 'Untitled Test'}</div>
+      <HeaderBlock branding={branding} accent={accent} />
+      <MetaBlock meta={meta} accent={accent} />
 
       {meta.instructions ? (
         <div style={styles.instructionsBox(accent)}>
-          <div style={styles.instructionsTitle}>General Instructions</div>
+          <div style={styles.instructionsTitle(accent)}>General Instructions</div>
           <div style={{ whiteSpace: 'pre-wrap' }}>{meta.instructions}</div>
         </div>
       ) : null}
@@ -331,10 +498,10 @@ export function PaperTemplate({
       {groups.length === 0 ? (
         <div
           style={{
-            border: '1px dashed #bbb',
+            border: `1px dashed ${COLOR_LINE}`,
             padding: 24,
             textAlign: 'center',
-            color: '#888',
+            color: COLOR_MUTED,
             marginTop: 12,
           }}
         >
@@ -347,10 +514,15 @@ export function PaperTemplate({
           return (
             <section key={gi}>
               {group.label ? (
-                <div style={styles.sectionHeader(accent)}>{group.label}</div>
-              ) : gi === 0 ? null : (
-                <hr style={styles.rule} />
-              )}
+                <div style={styles.sectionWrap}>
+                  <div style={styles.sectionRule(accent)} />
+                  <div style={styles.sectionBar(accent)}>{group.label}</div>
+                  <div style={styles.sectionRule(accent)} />
+                  <div style={styles.sectionBlueprint}>
+                    {sectionBlueprintSummary(group.rows, startIndex)}
+                  </div>
+                </div>
+              ) : null}
               {group.rows.map((row, ri) => (
                 <QuestionRow key={row.id} index={startIndex + ri} row={row} />
               ))}
@@ -358,10 +530,6 @@ export function PaperTemplate({
           )
         })
       )}
-
-      <div style={styles.footer}>
-        {branding.footer_text} · {branding.inst_name}
-      </div>
     </div>
   )
 }

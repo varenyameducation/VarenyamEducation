@@ -9,23 +9,29 @@ import { Button } from '@/components/ui/button'
 import { QuestionForm } from '@/components/questions/question-form'
 import type {
   DifficultyValue,
-  ExamTypeValue,
   QuestionFormValues,
   QuestionTypeValue,
   SubjectValue,
 } from '@/lib/validation/question'
 import { apiGet, apiPatch, type Question } from '@/lib/ui/api'
 import { normalizeQuestionFormForApi } from '@/lib/ui/normalize-question-form'
+import type { TaxonomyTag } from '@/types/taxonomy'
 
 function toFormInitialValues(q: Question): Partial<QuestionFormValues> {
+  // Strip name fields off the API rows before seeding the picker — the
+  // picker holds canonical id-only TaxonomyTag (names are rehydrated by
+  // the server on the next read).
+  const seedTags: TaxonomyTag[] = (q.taxonomies ?? []).map((row) => ({
+    course_id: row.course_id,
+    chapter_id: row.chapter_id ?? null,
+    topic_id: row.topic_id ?? null,
+    exam_type: row.exam_type,
+  }))
   return {
-    course_id: q.course_id ?? undefined,
-    chapter_id: q.chapter_id ?? undefined,
-    topic_id: q.topic_id ?? undefined,
     subject: q.subject as SubjectValue,
+    taxonomies: seedTags,
     question_type: q.question_type as QuestionTypeValue,
     difficulty: q.difficulty as DifficultyValue,
-    exam_type: q.exam_type as ExamTypeValue,
     marks_correct: Number(q.marks_correct),
     marks_negative: Number(q.marks_negative),
     question_body: q.question_body,

@@ -13,10 +13,12 @@ import {
   ListTree,
   Plus,
   RefreshCw,
+  Tags,
   Upload,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { QuestionCard } from '@/components/questions/question-card'
+import { BulkRetagModal } from '@/components/questions/bulk-retag-modal'
 import { apiGet, type Paginated, type Question } from '@/lib/ui/api'
 import { cn } from '@/lib/utils'
 
@@ -24,10 +26,12 @@ type CourseNode = { id: string; name: string; grade: number }
 type ChapterNode = { id: string; name: string; course_id: string; subject: string }
 type TopicNode = { id: string; name: string; chapter_id: string }
 
-type QuestionWithTaxonomy = Question & {
-  course?: { id: string; name: string } | null
-  chapter?: { id: string; name: string } | null
-  topic?: { id: string; name: string } | null
+// Read the legacy "primary tag" view of a question — the first m2m tag.
+// Used for backward-compatible grouping/filtering; multi-tag cross-product
+// grouping is deliberately not done here (would change visible counts).
+type QuestionWithTaxonomy = Question
+function primaryTag(q: Question) {
+  return q.taxonomies?.[0]
 }
 
 type Selection =
@@ -52,6 +56,8 @@ function useAllQuestions() {
 
 export default function QuestionsListPage() {
   const [selection, setSelection] = React.useState<Selection>({ kind: 'all' })
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set())
+  const [retagOpen, setRetagOpen] = React.useState(false)
 
   const coursesQuery = useQuery({
     queryKey: ['taxonomy', 'courses'],
@@ -67,16 +73,49 @@ export default function QuestionsListPage() {
   const counts = React.useMemo(() => buildCounts(allItems), [allItems])
 
   // Filter visible questions by current selection (no extra API call).
+  // Match any tag on the question — a multi-tagged question shows under
+  // every relevant slice in the left tree.
   const visible = React.useMemo(() => {
     if (selection.kind === 'all') return allItems
     if (selection.kind === 'course') {
-      return allItems.filter((q) => q.course?.id === selection.courseId)
+      return allItems.filter((q) =>
+        q.taxonomies?.some((t) => t.course_id === selection.courseId),
+      )
     }
     if (selection.kind === 'chapter') {
-      return allItems.filter((q) => q.chapter?.id === selection.chapterId)
+      return allItems.filter((q) =>
+        q.taxonomies?.some((t) => t.chapter_id === selection.chapterId),
+      )
     }
-    return allItems.filter((q) => q.topic?.id === selection.topicId)
+    return allItems.filter((q) =>
+      q.taxonomies?.some((t) => t.topic_id === selection.topicId),
+    )
   }, [allItems, selection])
+
+  const toggleSelected = React.useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const clearSelection = React.useCallback(() => setSelectedIds(new Set()), [])
+
+  const allVisibleSelected =
+    visible.length > 0 && visible.every((q) => selectedIds.has(q.id))
+  const toggleSelectVisible = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (allVisibleSelected) {
+        for (const q of visible) next.delete(q.id)
+      } else {
+        for (const q of visible) next.add(q.id)
+      }
+      return next
+    })
+  }
 
   return (
     <div className="space-y-5">
@@ -125,6 +164,56 @@ export default function QuestionsListPage() {
           </div>
         </div>
       )}
+
+      {visible.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs">
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={allVisibleSelected}
+              onChange={toggleSelectVisible}
+              className="h-3.5 w-3.5"
+              aria-label="Select all visible"
+            />
+            {allVisibleSelected ? 'All visible selected' : 'Select all visible'}
+          </label>
+          <span className="text-muted-foreground">·</span>
+          <span>
+            <strong>{selectedIds.size}</strong> selected
+          </span>
+          {selectedIds.size > 0 && (
+            <>
+              <span className="text-muted-foreground">·</span>
+              <button
+                type="button"
+                onClick={clearSelection}
+                className="text-muted-foreground hover:underline"
+              >
+                Clear
+              </button>
+            </>
+          )}
+          <div className="ml-auto flex items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setRetagOpen(true)}
+              disabled={selectedIds.size === 0}
+            >
+              <Tags className="mr-1.5 h-3.5 w-3.5" />
+              Move/Copy to…
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <BulkRetagModal
+        open={retagOpen}
+        onOpenChange={setRetagOpen}
+        questionIds={Array.from(selectedIds)}
+        onSuccess={clearSelection}
+      />
 
       <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
         <aside>
@@ -176,6 +265,8 @@ export default function QuestionsListPage() {
             visible={visible}
             isLoading={questionsQuery.isLoading}
             onSelect={setSelection}
+            selectedIds={selectedIds}
+            onToggleSelected={toggleSelected}
           />
         </section>
       </div>
@@ -190,6 +281,8 @@ function ContentPanel({
   visible,
   isLoading,
   onSelect,
+  selectedIds,
+  onToggleSelected,
 }: {
   selection: Selection
   courses: CourseNode[]
@@ -197,6 +290,8 @@ function ContentPanel({
   visible: QuestionWithTaxonomy[]
   isLoading: boolean
   onSelect: (s: Selection) => void
+  selectedIds: Set<string>
+  onToggleSelected: (id: string) => void
 }) {
   if (isLoading) {
     return (
@@ -227,7 +322,12 @@ function ContentPanel({
               Pick a topic in the left tree to focus, or expand a course below
             </span>
           </div>
-          <GroupedView items={visible} onSelect={onSelect} />
+          <GroupedView
+            items={visible}
+            onSelect={onSelect}
+            selectedIds={selectedIds}
+            onToggleSelected={onToggleSelected}
+          />
         </div>
       </div>
     )
@@ -240,6 +340,8 @@ function ContentPanel({
       courses={courses}
       counts={counts}
       onSelect={onSelect}
+      selectedIds={selectedIds}
+      onToggleSelected={onToggleSelected}
     />
   )
 }
@@ -281,12 +383,16 @@ function FocusedTopicView({
   courses,
   counts,
   onSelect,
+  selectedIds,
+  onToggleSelected,
 }: {
   selection: Exclude<Selection, { kind: 'all' }>
   visible: QuestionWithTaxonomy[]
   courses: CourseNode[]
   counts: Counts
   onSelect: (s: Selection) => void
+  selectedIds: Set<string>
+  onToggleSelected: (id: string) => void
 }) {
   const course = courses.find((c) => c.id === selection.courseId)
   return (
@@ -336,7 +442,14 @@ function FocusedTopicView({
             .
           </div>
         ) : (
-          visible.map((q) => <QuestionCard key={q.id} q={q} />)
+          visible.map((q) => (
+            <QuestionCard
+              key={q.id}
+              q={q}
+              selected={selectedIds.has(q.id)}
+              onToggleSelected={() => onToggleSelected(q.id)}
+            />
+          ))
         )}
       </div>
     </div>
@@ -611,9 +724,13 @@ function ChapterTreeRow({
 function GroupedView({
   items,
   onSelect,
+  selectedIds,
+  onToggleSelected,
 }: {
   items: QuestionWithTaxonomy[]
   onSelect: (s: Selection) => void
+  selectedIds: Set<string>
+  onToggleSelected: (id: string) => void
 }) {
   const tree = React.useMemo(() => buildTree(items), [items])
   return (
@@ -677,7 +794,12 @@ function GroupedView({
                         </div>
                         <div className="grid gap-3">
                           {topicGroup.questions.map((q) => (
-                            <QuestionCard key={q.id} q={q} />
+                            <QuestionCard
+                              key={q.id}
+                              q={q}
+                              selected={selectedIds.has(q.id)}
+                              onToggleSelected={() => onToggleSelected(q.id)}
+                            />
                           ))}
                         </div>
                       </div>
@@ -717,27 +839,47 @@ type Counts = {
 }
 
 function buildCounts(items: QuestionWithTaxonomy[]): Counts {
+  // Counts roll up every tag on every question, so a question tagged in
+  // two courses contributes to both — matches the filter logic above.
   const byCourse = new Map<string, number>()
   const byChapter = new Map<string, number>()
   const byTopic = new Map<string, number>()
   for (const q of items) {
-    if (q.course?.id) byCourse.set(q.course.id, (byCourse.get(q.course.id) ?? 0) + 1)
-    if (q.chapter?.id)
-      byChapter.set(q.chapter.id, (byChapter.get(q.chapter.id) ?? 0) + 1)
-    if (q.topic?.id) byTopic.set(q.topic.id, (byTopic.get(q.topic.id) ?? 0) + 1)
+    const seenCourse = new Set<string>()
+    const seenChapter = new Set<string>()
+    const seenTopic = new Set<string>()
+    for (const t of q.taxonomies ?? []) {
+      if (t.course_id && !seenCourse.has(t.course_id)) {
+        seenCourse.add(t.course_id)
+        byCourse.set(t.course_id, (byCourse.get(t.course_id) ?? 0) + 1)
+      }
+      if (t.chapter_id && !seenChapter.has(t.chapter_id)) {
+        seenChapter.add(t.chapter_id)
+        byChapter.set(t.chapter_id, (byChapter.get(t.chapter_id) ?? 0) + 1)
+      }
+      if (t.topic_id && !seenTopic.has(t.topic_id)) {
+        seenTopic.add(t.topic_id)
+        byTopic.set(t.topic_id, (byTopic.get(t.topic_id) ?? 0) + 1)
+      }
+    }
   }
   return { byCourse, byChapter, byTopic }
 }
 
 function buildTree(items: QuestionWithTaxonomy[]): CourseGroup[] {
+  // Group each question by its FIRST tag only. Multi-tag cross-product
+  // grouping would duplicate cards in the expanded view; we already do
+  // tag-OR filtering at the selection level, so the primary-tag view here
+  // gives a single deterministic home for each card.
   const courseMap = new Map<string, CourseGroup>()
   for (const q of items) {
-    const courseId = q.course?.id ?? '_unassigned'
-    const courseName = q.course?.name ?? 'Unassigned'
-    const chapterId = q.chapter?.id ?? '_unassigned'
-    const chapterName = q.chapter?.name ?? 'Unassigned'
-    const topicId = q.topic?.id ?? '_unassigned'
-    const topicName = q.topic?.name ?? 'Unassigned'
+    const tag = primaryTag(q)
+    const courseId = tag?.course_id ?? '_unassigned'
+    const courseName = tag?.course_name ?? 'Unassigned'
+    const chapterId = tag?.chapter_id ?? '_unassigned'
+    const chapterName = tag?.chapter_name ?? 'Unassigned'
+    const topicId = tag?.topic_id ?? '_unassigned'
+    const topicName = tag?.topic_name ?? 'Unassigned'
 
     let course = courseMap.get(courseId)
     if (!course) {

@@ -151,15 +151,25 @@ const matrixRowSchema = z.object({
   text: z.string().min(1, 'Required'),
 })
 
+// Canonical id-only TaxonomyTag (course + optional chapter + optional topic
+// + exam_type). Server denormalizes names back on the `TaxonomyTagRow`
+// response; the form only POSTs ids.
+export const taxonomyTagSchema = z.object({
+  course_id: z.string().min(1),
+  chapter_id: z.string().nullable().optional(),
+  topic_id: z.string().nullable().optional(),
+  exam_type: examTypeSchema,
+})
+
+// BE now accepts the m2m `taxonomies` array — no legacy singular
+// course_id/chapter_id/topic_id/exam_type top-level fields. `subject` and
+// `difficulty` are still question-level attributes the server expects.
 export const questionFormSchema = z
   .object({
-    course_id: uuidSchema,
-    chapter_id: uuidSchema,
-    topic_id: uuidSchema,
     subject: subjectSchema,
+    taxonomies: z.array(taxonomyTagSchema).min(1, 'Add at least one taxonomy tag'),
     question_type: questionTypeSchema,
     difficulty: difficultySchema,
-    exam_type: examTypeSchema,
     marks_correct: z.coerce.number().positive().max(99),
     marks_negative: z.coerce.number().min(0).max(99),
     question_body: z.string().min(10, 'Question body must be at least 10 characters'),
@@ -231,7 +241,7 @@ export type QuestionFormValues = z.infer<typeof questionFormSchema>
 export const questionFormDefaults: Partial<QuestionFormValues> = {
   question_type: 'mcq',
   difficulty: 'medium',
-  exam_type: 'jee',
+  taxonomies: [],
   marks_correct: 4,
   marks_negative: 1,
   question_body: '',

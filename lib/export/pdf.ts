@@ -9,20 +9,26 @@ import { TestPaperDocument } from './TestPaperDocument'
 
 const KATEX_CSS_PATH = 'node_modules/katex/dist/katex.min.css'
 
-function buildHeaderTemplate(branding: Branding): string {
-  return `
-    <div style="font-size:8px; width:100%; padding:0 15mm; color:#666; display:flex; justify-content:space-between;">
-      <span>${escapeHtml(branding.inst_name)}</span>
-      <span>${branding.tagline ? escapeHtml(branding.tagline) : ''}</span>
-    </div>
-  `
+function brandHex(branding: Branding): string {
+  const h = branding.brand_color_hex || '1B3A6B'
+  return h.startsWith('#') ? h : `#${h}`
+}
+
+function buildHeaderTemplate(): string {
+  // Body block already renders the full branded header on page 1; chrome
+  // header stays empty so subsequent pages don't double up.
+  return `<div style="font-size:0; width:100%;"></div>`
 }
 
 function buildFooterTemplate(branding: Branding): string {
+  const accent = brandHex(branding)
   return `
-    <div style="font-size:8px; width:100%; padding:0 15mm; color:#666; display:flex; justify-content:space-between;">
+    <div style="font-size:8px; width:100%; padding:4px 15mm 0; color:#666; text-align:center; border-top:0.75pt solid ${escapeHtml(accent)};">
       <span>${escapeHtml(branding.footer_text)}</span>
-      <span>Page <span class="pageNumber"></span> / <span class="totalPages"></span></span>
+      <span style="margin:0 6px;">·</span>
+      <span>${escapeHtml(branding.inst_name)}</span>
+      <span style="margin:0 6px;">·</span>
+      <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span>
     </div>
   `
 }
@@ -65,7 +71,7 @@ export async function generateTestPDF(testId: string): Promise<Buffer> {
       printBackground: true,
       margin: { top: '20mm', bottom: '20mm', left: '15mm', right: '15mm' },
       displayHeaderFooter: true,
-      headerTemplate: buildHeaderTemplate(brandingWithLogo),
+      headerTemplate: buildHeaderTemplate(),
       footerTemplate: buildFooterTemplate(brandingWithLogo),
     })
 
