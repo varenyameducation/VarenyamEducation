@@ -26,7 +26,10 @@ const taxonomyTagBase = z.object({
   exam_type: examTypeSchema,
 })
 
-export const taxonomyTagSchema = taxonomyTagBase.superRefine(topicRequiresChapter)
+// .strict() so a confused client POSTing the output-only joined fields
+// (course_name / chapter_name / topic_name / subject from TaxonomyTagRow)
+// gets a clear validation error rather than having them silently stripped.
+export const taxonomyTagSchema = taxonomyTagBase.strict().superRefine(topicRequiresChapter)
 
 export const taxonomyTagRowSchema = taxonomyTagBase
   .extend({

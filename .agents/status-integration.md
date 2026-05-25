@@ -2,6 +2,21 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-26 01:05 — integration/joined-names-on-tag-row
+- DONE: Joined-name fields on `TaxonomyTagRow` + strict input validation.
+  - `types/taxonomy.ts` — `TaxonomyTagRow` now exposes optional `course_name`, `chapter_name?: string | null`, `topic_name?: string | null`, and `subject?: 'Physics' | 'Chemistry' | 'Maths' | 'Biology'`. All optional so the FE bulk-retag flow can build Row-shaped objects locally before the server round-trip, and so course-level-only tags (no chapter) can omit the chapter-derived names.
+  - `lib/integrations/validation/taxonomy-tag.ts` — `taxonomyTagSchema` now `.strict()`. Reason captured inline: a confused client POSTing the output-only joined fields will get a clear validation error instead of a silent strip. `taxonomyTagRowSchema` left non-strict on purpose — it isn't used to validate inbound payloads, only to type-assert the row shape, and keeping it lenient avoids breaking the existing `_AssertTagRow` check.
+  - `TaxonomyTag` (input type) intentionally unchanged. `InventoryCounts`, `BlueprintSection`, `TestGenerateInput` unchanged.
+- Commit:
+  - `27d536f` [INT] Add joined-name fields to TaxonomyTagRow
+- PR: pending — branch pushed, no `gh` CLI on this machine. Orchestrator/admin to open via https://github.com/varenyameducation/VarenyamEducation/pull/new/integration/joined-names-on-tag-row
+- BLOCKED ON: none.
+- NOTES / Contract change for BE + FE:
+  - **BE (`backend/joined-names-on-tag-row` follow-up):** `withTaxonomies()` in `app/api/questions/route.ts` should now populate these four optional fields on every row returned from GET / POST / PATCH `/api/questions` responses. Source data: `course.name`, `chapter.name`, `chapter.subject`, `topic.name` from the joined Prisma `include`. Fields are optional in the type — BE is free to omit them on internal helper paths but **the public `/api/questions` responses should populate all four whenever the FKs are non-null**.
+  - **FE (`frontend/multitax-blueprint-paper` rebase):** Chip-label rendering can now read `tag.course_name` / `tag.chapter_name` / `tag.topic_name` / `tag.subject` directly off each `TaxonomyTagRow` — no extra fetch needed against the courses tree. Until BE deploys the new `withTaxonomies()`, these fields will be `undefined`; treat them as optional and fall back to the existing tree-lookup (or to `course_id`-style placeholder text) so behavior degrades gracefully during the rolling deploy.
+  - **POST contract reminder:** input `TaxonomyTag` payloads must NOT include `course_name` / `chapter_name` / `topic_name` / `subject`. The Zod input schema is now strict and will reject them.
+- `npx tsc --noEmit` clean for every file in integration scope. Remaining pre-existing errors are all in FE files (`app/(dashboard)/questions/[id]/edit/page.tsx`, `app/(dashboard)/questions/[id]/page.tsx`, `components/questions/question-card.tsx`) that still read `q.course_id` / `q.exam_type` off `Question` — already flagged in the previous status entry and addressed on FE's `frontend/multitax-blueprint-paper` branch.
+
 ## 2026-05-25 16:30 — integration/m2m-types-and-validators
 - DONE: M2M-taxonomy shared types + Zod validators + duplicate-check refactor + sample-courses seed.
   - `types/taxonomy.ts` — `ExamType`, `TaxonomyTag`, `TaxonomyTagRow`, `InventoryCounts`, `BlueprintSection`, `TestGenerateInput`.
