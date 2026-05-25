@@ -8,150 +8,109 @@
 git config user.email   # must be snehachoukseyobc@gmail.com
 ```
 
-## Current task — M2M question taxonomy + test blueprint generator
+## Current task — Populate joined-name fields on taxonomy responses
 
-**Sprint goal:** A single question row can belong to multiple Courses, Chapters/Topics, and Exam types (CBSE + ICSE, school + JEE, etc.). Test creation supports section-aware blueprint pulls ("5 easy, 3 medium, 2 hard from Algebra Play").
+**Why:** PRs #22 (INT shared types) and #23 (BE m2m API) shipped `taxonomies: TaxonomyTagRow[]` on `/api/questions` responses with ID-only rows. The FE PR (`frontend/multitax-blueprint-paper`, currently in conflict with main) needs human-readable chip labels and cannot afford an extra round-trip to fetch the course/chapter/topic tree on every question render. INT is extending `TaxonomyTagRow` with optional name fields on branch `integration/joined-names-on-tag-row`; **your job is to populate those fields from the Prisma `include`**.
 
-**Branch:** `backend/m2m-taxonomy-and-blueprint`
+**Branch:** `backend/joined-names-on-tag-row`
 
-### ⚠️ Pre-existing work — DO NOT redo
+**Base off:** `integration/joined-names-on-tag-row` (so your code typechecks against the new interface). Rebase to `main` if INT has merged by the time you start.
 
-The branch `backend/m2m-taxonomy-and-blueprint` **already exists** and has **1 commit** authored by Sneha: `[BE] M2M question taxonomy schema + create-only migration` (SHA `3c5692d`). That commit was produced when the orchestrator pane was mis-prompted as backend earlier in the session and ran the schema/migration portion of this brief before the user corrected the routing.
+### Schema check
 
-**What's already done (do NOT redo):**
-- `prisma/schema.prisma` — `Question.course_id/chapter_id/topic_id/exam_type` columns dropped; `QuestionTaxonomy` junction model added with the exact fields + indexes + `@@unique` from this brief; inverse relations added on `Course`/`Chapter`/`Topic`/`Question`; `test_questions.question_id` now `onDelete: Cascade`.
-- `prisma/migrations/20260525170712_m2m_question_taxonomy/migration.sql` — created via `prisma migrate dev --create-only` (NOT applied to DB; orchestrator will apply).
+- No Prisma changes. The `QuestionTaxonomy` model already has FK relations to `Course`, `Chapter?`, `Topic?`. You just need to `select` their names.
 
-**Your starting move:**
-```bash
-git fetch origin
-git checkout backend/m2m-taxonomy-and-blueprint
-git pull
-git config user.email   # confirm snehachoukseyobc@gmail.com
-npx prisma generate     # so the new QuestionTaxonomy model is available in @prisma/client
-```
-Verify `git log --oneline main..HEAD` shows exactly `[BE] M2M question taxonomy schema + create-only migration`. If it shows nothing, the branch wasn't fetched — re-run `git fetch && git checkout backend/m2m-taxonomy-and-blueprint`.
+### Changes — `/api/questions/route.ts`
 
-**Then skip the "Schema changes" section below and jump straight to "API changes — Question".** Schema is already shipped on this branch. If you discover a bug in the pre-existing schema/migration, fix it in a **new follow-up commit** on the same branch (e.g. `[BE] Fix QuestionTaxonomy index`); never rewrite history.
+- [ ] Extend `taxonomySelect`:
 
----
+  ```ts
+  const taxonomySelect = {
+    id: true,
+    course_id: true,
+    chapter_id: true,
+    topic_id: true,
+    exam_type: true,
+    created_at: true,
+    course:  { select: { id: true, name: true } },
+    chapter: { select: { id: true, name: true, subject: true } },
+    topic:   { select: { id: true, name: true } },
+  } as const
+  ```
 
-**The DB is currently empty** (orchestrator cleared all questions / tests / test_questions on 2026-05-25). You may write a destructive migration without data-preservation concerns. Drop the old singular FK columns from `Question` in the same migration.
+- [ ] Update `TaxonomyRow` (the local type) to reflect the new shape so TS stays happy.
 
-### Schema changes (Prisma + migration)
+- [ ] Update `withTaxonomies()` to flatten the nested includes into the row:
 
-- [ ] Drop columns `course_id`, `chapter_id`, `topic_id`, `exam_type` from `Question`. Keep `subject` (it's a static enum, not a taxonomy node).
-- [ ] Add junction model `QuestionTaxonomy`:
-  ```prisma
-  model QuestionTaxonomy {
-    id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-    question_id String   @db.Uuid
-    course_id   String   @db.Uuid
-    chapter_id  String?  @db.Uuid   // optional — a question can be tagged at course level only
-    topic_id    String?  @db.Uuid   // optional — chapter-only tagging is allowed
-    exam_type   String                 // 'school' | 'board' | 'jee' | 'neet'
-    created_at  DateTime @default(now()) @db.Timestamptz
-
-    question Question @relation(fields: [question_id], references: [id], onDelete: Cascade)
-    course   Course   @relation(fields: [course_id], references: [id])
-    chapter  Chapter? @relation(fields: [chapter_id], references: [id])
-    topic    Topic?   @relation(fields: [topic_id], references: [id])
-
-    @@unique([question_id, course_id, chapter_id, topic_id, exam_type])
-    @@index([course_id])
-    @@index([chapter_id])
-    @@index([topic_id])
-    @@map("question_taxonomies")
+  ```ts
+  function withTaxonomies<T extends { question_taxonomies: TaxonomyRow[] }>(question: T) {
+    const { question_taxonomies, ...rest } = question
+    return {
+      ...rest,
+      taxonomies: question_taxonomies.map((t) => ({
+        id: t.id,
+        course_id: t.course_id,
+        chapter_id: t.chapter_id,
+        topic_id: t.topic_id,
+        exam_type: t.exam_type,
+        created_at: t.created_at,
+        course_name: t.course?.name,
+        chapter_name: t.chapter?.name ?? null,
+        topic_name: t.topic?.name ?? null,
+        subject: t.chapter?.subject as 'Physics' | 'Chemistry' | 'Maths' | 'Biology' | undefined,
+      })),
+    }
   }
   ```
-- [ ] Add the inverse `question_taxonomies QuestionTaxonomy[]` relation field on `Question`, `Course`, `Chapter`, `Topic`.
-- [ ] Generate migration: `npx prisma migrate dev --name m2m_question_taxonomy --create-only`. Do **not** run it — orchestrator will apply against the real DB. Commit the migration file.
-- [ ] **Drop `test_questions.question_id` FK to use `onDelete: Cascade`** at the same time (the test_questions row should disappear when a question is hard-deleted). Currently no cascade; add it.
 
-### API changes — Question
+  The shape returned now matches the extended `TaxonomyTagRow` from `@/types/taxonomy`. Keep the field names exactly aligned with INT's interface.
 
-- [ ] `POST /api/questions` — accept new field `taxonomies: TaxonomyTag[]` where `TaxonomyTag = { course_id: string; chapter_id?: string; topic_id?: string; exam_type: 'school'|'board'|'jee'|'neet' }`. Create the question + the junction rows in a single Prisma transaction. Reject if `taxonomies` is empty.
-- [ ] `PATCH /api/questions/[id]` — accept `taxonomies` field as the full replacement set (idempotent). Diff against existing rows: insert new, delete removed, leave unchanged ones alone.
-- [ ] `GET /api/questions` — accept new filter query params: `course_id`, `chapter_id`, `topic_id`, `exam_type` — all filter via `question_taxonomies`. Existing `?subject=` still filters via the column on Question. Response includes `taxonomies: TaxonomyTag[]` in each item.
-- [ ] `GET /api/questions/[id]` — response includes `taxonomies: TaxonomyTag[]`.
-- [ ] **New: `POST /api/questions/[id]/taxonomies`** — body `{ taxonomies: TaxonomyTag[] }` adds these tags (skips duplicates). For bulk re-tag flows.
-- [ ] **New: `DELETE /api/questions/[id]/taxonomies/[taxonomyId]`** — removes a single tag.
-- [ ] **New: `POST /api/questions/bulk/retag`** — body `{ question_ids: string[]; add?: TaxonomyTag[]; remove?: TaxonomyTag[] }` for moving many questions across taxonomies at once. Wrap in a transaction.
+### Changes — `/api/questions/[id]/route.ts` (PATCH + GET if applicable)
 
-### API changes — Import
+- [ ] Apply the same `taxonomySelect` + `withTaxonomies()` updates. If `withTaxonomies` is duplicated, factor it into `lib/api/questions.ts` and re-import from both routes. If it's already imported, just update the one definition.
 
-- [ ] `POST /api/questions/import` (docx/pdf path) — instead of writing singular `course_id`/`chapter_id`/`topic_id` on each Question, write one row in `question_taxonomies` per question using the form's defaults. The `exam_type` form field becomes the junction row's `exam_type`.
-- [ ] Same change for the xlsx path. The xlsx schema currently has `course_name`/`chapter_name`/`topic_name`/`exam_type` columns — translate those into a single junction row per question. (Future iteration: allow xlsx to specify multiple tag rows per question. Out of scope for this brief.)
+### Changes — `/api/questions/[id]/taxonomies/route.ts` (POST add tag)
 
-### API changes — Tests (blueprint generation)
+- [ ] After insert, the route returns the new tag. Update its response to include the joined names by re-querying or by passing the include into the Prisma create.
 
-- [ ] **New: `POST /api/tests/generate`** — generate a test from a blueprint. Body:
-  ```ts
-  {
-    title: string
-    course_id: string
-    subject: 'Physics' | 'Chemistry' | 'Maths' | 'Biology'
-    exam_type: 'school' | 'board' | 'jee' | 'neet'
-    duration_minutes: number
-    instructions?: string
-    sections: Array<{
-      label: string                 // "Section A"
-      blueprint: {
-        easy?: number
-        medium?: number
-        hard?: number
-        advanced?: number
-      }
-      // Optional: scope picks to specific chapters/topics within the course
-      chapter_ids?: string[]
-      topic_ids?: string[]
-      // Optional: prefer specific question_type (defaults: any)
-      question_type?: 'mcq' | 'numerical' | 'subjective' | 'multi_select'
-    }>
-  }
-  ```
-  Behavior:
-  - For each section, pull questions matching (course_id via junction, exam_type via junction, subject, optionally chapter_ids/topic_ids/question_type, difficulty). Random sample without replacement across the whole test.
-  - If a section can't be filled (e.g. asked for 5 hard but only 3 exist), return `400 INSUFFICIENT_QUESTIONS` with `details: { section_label, difficulty, available, requested }`.
-  - On success, create a Test row + TestQuestion rows in a transaction with `position` ordered by section then random pick, `section_label` set on each TQ.
-  - Return the created test with `test_questions` already included.
+### Changes — `/api/questions/bulk/retag/route.ts`
 
-- [ ] **New: `GET /api/questions/inventory-counts`** — body or query `course_id, exam_type, subject, chapter_ids[], topic_ids[]` returns counts per difficulty per question_type:
-  ```ts
-  { counts: { easy: number; medium: number; hard: number; advanced: number; total: number } }
-  ```
-  This powers the FE blueprint builder ("you have 12 hard available; you asked for 5 — OK").
+- [ ] If this route returns updated tags, include names. If it returns only counts (`{ added, removed }`), leave it alone.
+
+### Changes — `/api/questions/[id]/taxonomies/[taxonomyId]/route.ts` (DELETE)
+
+- [ ] Probably returns `{ ok: true }` — no shape change. Skim and confirm.
+
+### What you do NOT change
+
+- `types/taxonomy.ts` is INT's. Do not edit.
+- The Zod input schema (`lib/integrations/validation/taxonomy-tag.ts`) is INT's; it must still reject the new name fields on input (server populates them on output only).
+- FE files (`lib/ui/**`, `components/**`, `app/(dashboard)/**`).
 
 ### Validation
 
-- [ ] All new bodies validated with Zod. Reuse `lib/validation/question.ts` patterns. Add a new `lib/api/tests.ts` block for the generate schema.
-- [ ] On Zod failure, return `400 INVALID_BODY` with full issue list in `details.issues`.
-
-### Existing-callsite cleanup
-
-- [ ] Search every callsite that reads `question.course_id` / `question.chapter_id` / `question.topic_id` and migrate to read from `question_taxonomies`. Notable spots: `/api/questions` GET (the existing `course/chapter/topic` includes), the questions tree on `/api/tests` if it filters, the duplicate-check in `lib/integrations/similarity/duplicate-check.ts` (NOT in your scope — flag for integration in status).
-- [ ] Update `/api/questions` response shape: `course`, `chapter`, `topic` singular include fields are gone — replace with `taxonomies` array. Keep `subject` on the question.
-
-### Scope
-
-- `app/api/**`, `lib/api/**`, `lib/db/**`, `lib/auth/**`, `prisma/**`.
-- Out of scope: `app/(dashboard)/**`, `components/**`, `lib/ui/**`, `lib/integrations/**`, `middleware.ts`.
-- If you must touch `lib/integrations/document/parse-questions-text.ts` to thread taxonomies through, **don't** — flag it in `status-backend.md` for the integration worker.
+- [ ] `npx prisma generate` clean.
+- [ ] `npx tsc --noEmit` clean (your worktree may not have INT's branch checked out yet — if you typecheck against current main and the new field references are flagged as unknown on `TaxonomyTagRow`, that's expected; rebase onto `integration/joined-names-on-tag-row` first or wait for it to merge).
 
 ### Workflow
 
 1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, and this brief.
-2. `git checkout main && git pull && git checkout -b backend/m2m-taxonomy-and-blueprint`
-3. Implement schema first → migration → API changes → existing-callsite cleanup → typecheck.
-4. Commit by group with `[BE]` prefix (e.g. `[BE] M2M question taxonomy schema + migration`, `[BE] /api/questions accepts and returns taxonomies`, `[BE] /api/tests/generate blueprint endpoint`, `[BE] inventory-counts endpoint for blueprint preview`). **No `Co-Authored-By: Claude` footer.**
-5. Push. Record the GitHub `pull/new` URL.
-6. Append entry to `.agents/status-backend.md` with branch, commit list, PR URL, and any callsite handoffs to integration.
-7. Run `~/report.sh backend "<short summary>"`.
-8. **Stop.**
+2. Check if INT's `integration/joined-names-on-tag-row` has merged to main:
+   ```
+   git fetch origin
+   git log origin/main --oneline -5 | grep -i "joined-names" || echo "INT not merged yet — base off integration/joined-names-on-tag-row"
+   ```
+   - If merged: `git checkout main && git pull && git checkout -b backend/joined-names-on-tag-row`
+   - If not: `git checkout origin/integration/joined-names-on-tag-row -b backend/joined-names-on-tag-row` (you will rebase to main once INT lands)
+3. Make changes. One commit per route file or one combined commit — your call. Use `[BE]` prefix and no Claude footer.
+4. Push. Print the `pull/new/` URL.
+5. Append entry to `.agents/status-backend.md` with branch, commit list, PR URL.
+6. Run `~/report.sh backend "<short summary>"`.
+7. **Stop.**
 
 ### Hard rules
 
-- One PR for the whole sprint task. Multiple commits OK; one branch.
-- The migration must be **--create-only** (file lands, no DB apply). Orchestrator applies.
-- Do not touch FE files. Do not touch `lib/ui/**`.
-- If you discover a needed contract change that affects FE (e.g. you renamed a response field), append a `## Contract change` block to `status-backend.md` so FE worker can adjust when they rebase.
+- Do not touch `prisma/schema.prisma`. No new migration.
+- Do not edit `types/taxonomy.ts`. That is INT's.
+- Do not touch FE files.
+- The wire shape returned from `/api/questions` MUST be a superset of what shipped in #23 (additive only). No fields removed.
