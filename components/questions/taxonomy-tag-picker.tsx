@@ -7,16 +7,21 @@ import {
   MOCK_CHAPTERS,
   MOCK_TOPICS,
 } from '@/lib/ui/mocks/taxonomy'
-import { EXAM_TYPES, type ExamTypeValue, type SubjectValue } from '@/lib/validation/question'
+import { EXAM_TYPES, type ExamTypeValue } from '@/lib/validation/question'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
-import { formatTagLabel, type TaxonomyTag } from '@/lib/ui/mocks/m2m'
+import type { TaxonomyTag } from '@/types/taxonomy'
 import { cn } from '@/lib/utils'
 
 export interface TaxonomyTagPickerProps {
   value: TaxonomyTag[]
   onChange: (next: TaxonomyTag[]) => void
+  // Chip label formatter. Canonical TaxonomyTag is id-only, so the parent
+  // (which has the course/chapter/topic name maps in scope) is responsible
+  // for printing readable chip text. The default just shows the most
+  // specific id available, which keeps untyped callsites useful.
+  formatLabel?: (tag: TaxonomyTag) => string
   // Optional surface-level error rendered under the chip row (e.g. "at
   // least one tag required").
   error?: string | null
@@ -24,11 +29,22 @@ export interface TaxonomyTagPickerProps {
   id?: string
 }
 
+const defaultFormatLabel = (tag: TaxonomyTag): string => {
+  const idLabel = tag.topic_id ?? tag.chapter_id ?? tag.course_id
+  return `${idLabel} · ${tag.exam_type}`
+}
+
 // Controlled multi-tag picker for question taxonomy. Parent holds the
 // `taxonomies: TaxonomyTag[]` form-state slice; this component renders
 // the chip row + an inline add-form. Course + exam type are required
 // per tag, chapter + topic are optional.
-export function TaxonomyTagPicker({ value, onChange, error, id }: TaxonomyTagPickerProps) {
+export function TaxonomyTagPicker({
+  value,
+  onChange,
+  formatLabel = defaultFormatLabel,
+  error,
+  id,
+}: TaxonomyTagPickerProps) {
   const [adding, setAdding] = React.useState(false)
 
   const remove = (idx: number) => {
@@ -63,7 +79,11 @@ export function TaxonomyTagPicker({ value, onChange, error, id }: TaxonomyTagPic
           </span>
         )}
         {value.map((tag, idx) => (
-          <TagChip key={idx} tag={tag} onRemove={() => remove(idx)} />
+          <TagChip
+            key={idx}
+            label={formatLabel(tag)}
+            onRemove={() => remove(idx)}
+          />
         ))}
         <Button
           type="button"
@@ -84,7 +104,7 @@ export function TaxonomyTagPicker({ value, onChange, error, id }: TaxonomyTagPic
   )
 }
 
-function TagChip({ tag, onRemove }: { tag: TaxonomyTag; onRemove: () => void }) {
+function TagChip({ label, onRemove }: { label: string; onRemove: () => void }) {
   return (
     <span
       role="listitem"
@@ -93,14 +113,14 @@ function TagChip({ tag, onRemove }: { tag: TaxonomyTag; onRemove: () => void }) 
         'border-primary/30 text-foreground',
       )}
     >
-      <span className="truncate max-w-[28ch]" title={formatTagLabel(tag)}>
-        {formatTagLabel(tag)}
+      <span className="truncate max-w-[28ch]" title={label}>
+        {label}
       </span>
       <button
         type="button"
         onClick={onRemove}
         className="rounded-full p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-        aria-label={`Remove tag ${formatTagLabel(tag)}`}
+        aria-label={`Remove tag ${label}`}
       >
         <X className="h-3 w-3" />
       </button>
@@ -133,23 +153,10 @@ function InlineAddForm({
 
   const confirm = () => {
     if (!canConfirm) return
-    const course = MOCK_COURSES.find((c) => c.id === courseId)
-    if (!course) return
-    const chapter = chapterId ? MOCK_CHAPTERS.find((c) => c.id === chapterId) ?? null : null
-    const topic = topicId ? MOCK_TOPICS.find((t) => t.id === topicId) ?? null : null
-    // Subject defaults from chapter when present, otherwise from the
-    // course's stream — but stream → subject isn't 1:1 (PCM has three),
-    // so we fall back to Physics as a sensible default and let edit flow
-    // refine it later.
-    const subject: SubjectValue = (chapter?.subject as SubjectValue | undefined) ?? 'Physics'
     onConfirm({
-      course_id: course.id,
-      course_name: course.name,
-      chapter_id: chapter?.id ?? null,
-      chapter_name: chapter?.name ?? null,
-      topic_id: topic?.id ?? null,
-      topic_name: topic?.name ?? null,
-      subject,
+      course_id: courseId,
+      chapter_id: chapterId || null,
+      topic_id: topicId || null,
       exam_type: examType,
     })
   }

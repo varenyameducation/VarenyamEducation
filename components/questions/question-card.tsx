@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { RenderedBody } from '@/lib/ui/render-body'
 import type { Question } from '@/lib/ui/api'
 import type { DifficultyValue } from '@/lib/validation/question'
-import { deriveQuestionTags, formatTagLabel } from '@/lib/ui/mocks/m2m'
+import { formatTagLabel } from '@/lib/ui/mocks/m2m'
 import { cn } from '@/lib/utils'
 
 const DIFFICULTY_STYLES: Record<DifficultyValue, string> = {
@@ -60,7 +60,7 @@ export function QuestionCard({ q, selected, onToggleSelected }: QuestionCardProp
   )
 
   const isMcq = q.question_type === 'mcq' || q.question_type === 'multi_select'
-  const tags = deriveQuestionTags(q)
+  const tags = q.taxonomies ?? []
   const primaryTag = tags[0] ?? null
   const overflowTags = tags.slice(1)
 

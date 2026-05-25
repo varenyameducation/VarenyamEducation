@@ -15,9 +15,9 @@ import {
   QUESTION_TYPES,
   type DifficultyValue,
   type ExamTypeValue,
-  type QuestionTypeValue,
   type SubjectValue,
 } from '@/lib/validation/question'
+import type { QuestionType as BlueprintQuestionType } from '@/types/taxonomy'
 import { SUBJECTS } from '@/lib/ui/mocks/taxonomy'
 import { apiGet } from '@/lib/ui/api'
 import {
@@ -37,14 +37,25 @@ export interface BlueprintBuilderProps {
   onSubmit: (payload: GenerateTestPayload) => Promise<void> | void
 }
 
+// Section state mirrors `BlueprintSection` (canonical types/taxonomy) but
+// keeps mutation-friendly defaults: `''` for "any question type" and a
+// full Record (not Partial) for the difficulty inputs.
 type SectionDraft = {
   id: string
   label: string
   chapter_ids: string[]
   topic_ids: string[]
-  question_type: QuestionTypeValue | ''
+  question_type: BlueprintQuestionType | ''
   difficulty: Record<DifficultyValue, number>
 }
+
+// Restrict the picker to the four canonical blueprint-compatible types.
+// `matrix_match` is intentionally not blueprint-buildable (sampling logic
+// is undefined for matrix questions).
+const BLUEPRINT_QUESTION_TYPES = QUESTION_TYPES.filter(
+  (qt): qt is { value: BlueprintQuestionType; label: string } =>
+    qt.value !== 'matrix_match',
+)
 
 const EMPTY_DIFFICULTY: Record<DifficultyValue, number> = {
   easy: 0,
@@ -131,7 +142,7 @@ export function BlueprintBuilder({ busy, onSubmit }: BlueprintBuilderProps) {
         chapter_ids: s.chapter_ids.length ? s.chapter_ids : undefined,
         topic_ids: s.topic_ids.length ? s.topic_ids : undefined,
         question_type: s.question_type || undefined,
-        difficulty: s.difficulty,
+        blueprint: s.difficulty,
       })),
     }
     await onSubmit(payload)
@@ -335,12 +346,12 @@ function SectionRow({
         <Select
           value={section.question_type || ''}
           onChange={(e) =>
-            onChange({ question_type: e.target.value as QuestionTypeValue | '' })
+            onChange({ question_type: e.target.value as BlueprintQuestionType | '' })
           }
           className="max-w-[24ch]"
         >
           <option value="">Any question type</option>
-          {QUESTION_TYPES.map((qt) => (
+          {BLUEPRINT_QUESTION_TYPES.map((qt) => (
             <option key={qt.value} value={qt.value}>
               {qt.label}
             </option>
@@ -399,7 +410,7 @@ function SectionRow({
           <div className="grid grid-cols-4 gap-2">
             {DIFFICULTIES.map((d) => {
               const requested = section.difficulty[d.value]
-              const available = counts?.by_difficulty[d.value] ?? null
+              const available = counts?.[d.value] ?? null
               const exceeds = available != null && requested > available
               return (
                 <div key={d.value} className="space-y-1">
@@ -442,7 +453,7 @@ interface InventoryScope {
   subject: SubjectValue
   chapter_ids: string[]
   topic_ids: string[]
-  question_type?: QuestionTypeValue
+  question_type?: BlueprintQuestionType
 }
 
 // Debounced live inventory hint. Hits the real BE endpoint when the response

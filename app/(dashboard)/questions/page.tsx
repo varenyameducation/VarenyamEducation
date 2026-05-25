@@ -26,10 +26,12 @@ type CourseNode = { id: string; name: string; grade: number }
 type ChapterNode = { id: string; name: string; course_id: string; subject: string }
 type TopicNode = { id: string; name: string; chapter_id: string }
 
-type QuestionWithTaxonomy = Question & {
-  course?: { id: string; name: string } | null
-  chapter?: { id: string; name: string } | null
-  topic?: { id: string; name: string } | null
+// Read the legacy "primary tag" view of a question — the first m2m tag.
+// Used for backward-compatible grouping/filtering; multi-tag cross-product
+// grouping is deliberately not done here (would change visible counts).
+type QuestionWithTaxonomy = Question
+function primaryTag(q: Question) {
+  return q.taxonomies?.[0]
 }
 
 type Selection =
@@ -71,15 +73,23 @@ export default function QuestionsListPage() {
   const counts = React.useMemo(() => buildCounts(allItems), [allItems])
 
   // Filter visible questions by current selection (no extra API call).
+  // Match any tag on the question — a multi-tagged question shows under
+  // every relevant slice in the left tree.
   const visible = React.useMemo(() => {
     if (selection.kind === 'all') return allItems
     if (selection.kind === 'course') {
-      return allItems.filter((q) => q.course?.id === selection.courseId)
+      return allItems.filter((q) =>
+        q.taxonomies?.some((t) => t.course_id === selection.courseId),
+      )
     }
     if (selection.kind === 'chapter') {
-      return allItems.filter((q) => q.chapter?.id === selection.chapterId)
+      return allItems.filter((q) =>
+        q.taxonomies?.some((t) => t.chapter_id === selection.chapterId),
+      )
     }
-    return allItems.filter((q) => q.topic?.id === selection.topicId)
+    return allItems.filter((q) =>
+      q.taxonomies?.some((t) => t.topic_id === selection.topicId),
+    )
   }, [allItems, selection])
 
   const toggleSelected = React.useCallback((id: string) => {
@@ -829,27 +839,47 @@ type Counts = {
 }
 
 function buildCounts(items: QuestionWithTaxonomy[]): Counts {
+  // Counts roll up every tag on every question, so a question tagged in
+  // two courses contributes to both — matches the filter logic above.
   const byCourse = new Map<string, number>()
   const byChapter = new Map<string, number>()
   const byTopic = new Map<string, number>()
   for (const q of items) {
-    if (q.course?.id) byCourse.set(q.course.id, (byCourse.get(q.course.id) ?? 0) + 1)
-    if (q.chapter?.id)
-      byChapter.set(q.chapter.id, (byChapter.get(q.chapter.id) ?? 0) + 1)
-    if (q.topic?.id) byTopic.set(q.topic.id, (byTopic.get(q.topic.id) ?? 0) + 1)
+    const seenCourse = new Set<string>()
+    const seenChapter = new Set<string>()
+    const seenTopic = new Set<string>()
+    for (const t of q.taxonomies ?? []) {
+      if (t.course_id && !seenCourse.has(t.course_id)) {
+        seenCourse.add(t.course_id)
+        byCourse.set(t.course_id, (byCourse.get(t.course_id) ?? 0) + 1)
+      }
+      if (t.chapter_id && !seenChapter.has(t.chapter_id)) {
+        seenChapter.add(t.chapter_id)
+        byChapter.set(t.chapter_id, (byChapter.get(t.chapter_id) ?? 0) + 1)
+      }
+      if (t.topic_id && !seenTopic.has(t.topic_id)) {
+        seenTopic.add(t.topic_id)
+        byTopic.set(t.topic_id, (byTopic.get(t.topic_id) ?? 0) + 1)
+      }
+    }
   }
   return { byCourse, byChapter, byTopic }
 }
 
 function buildTree(items: QuestionWithTaxonomy[]): CourseGroup[] {
+  // Group each question by its FIRST tag only. Multi-tag cross-product
+  // grouping would duplicate cards in the expanded view; we already do
+  // tag-OR filtering at the selection level, so the primary-tag view here
+  // gives a single deterministic home for each card.
   const courseMap = new Map<string, CourseGroup>()
   for (const q of items) {
-    const courseId = q.course?.id ?? '_unassigned'
-    const courseName = q.course?.name ?? 'Unassigned'
-    const chapterId = q.chapter?.id ?? '_unassigned'
-    const chapterName = q.chapter?.name ?? 'Unassigned'
-    const topicId = q.topic?.id ?? '_unassigned'
-    const topicName = q.topic?.name ?? 'Unassigned'
+    const tag = primaryTag(q)
+    const courseId = tag?.course_id ?? '_unassigned'
+    const courseName = tag?.course_name ?? 'Unassigned'
+    const chapterId = tag?.chapter_id ?? '_unassigned'
+    const chapterName = tag?.chapter_name ?? 'Unassigned'
+    const topicId = tag?.topic_id ?? '_unassigned'
+    const topicName = tag?.topic_name ?? 'Unassigned'
 
     let course = courseMap.get(courseId)
     if (!course) {

@@ -15,7 +15,8 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { TaxonomyTagPicker } from '@/components/questions/taxonomy-tag-picker'
 import { apiPost } from '@/lib/ui/api'
-import type { TaxonomyTag } from '@/lib/ui/mocks/m2m'
+import type { TaxonomyTag } from '@/types/taxonomy'
+import { formatTagFromMocks } from '@/lib/ui/mocks/m2m'
 import { cn } from '@/lib/utils'
 
 type RetagAction = 'add' | 'replace' | 'remove'
@@ -58,9 +59,8 @@ export function BulkRetagModal({
         action,
         tags: tags.map((t) => ({
           course_id: t.course_id,
-          chapter_id: t.chapter_id,
-          topic_id: t.topic_id,
-          subject: t.subject,
+          chapter_id: t.chapter_id ?? null,
+          topic_id: t.topic_id ?? null,
           exam_type: t.exam_type,
         })),
       }
@@ -127,7 +127,11 @@ export function BulkRetagModal({
 
           <div className="space-y-1.5">
             <Label>Tags</Label>
-            <TaxonomyTagPicker value={tags} onChange={setTags} />
+            <TaxonomyTagPicker
+              value={tags}
+              onChange={setTags}
+              formatLabel={formatTagFromMocks}
+            />
           </div>
 
           {error && (

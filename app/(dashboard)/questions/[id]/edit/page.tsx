@@ -9,40 +9,29 @@ import { Button } from '@/components/ui/button'
 import { QuestionForm } from '@/components/questions/question-form'
 import type {
   DifficultyValue,
-  ExamTypeValue,
   QuestionFormValues,
   QuestionTypeValue,
   SubjectValue,
 } from '@/lib/validation/question'
 import { apiGet, apiPatch, type Question } from '@/lib/ui/api'
 import { normalizeQuestionFormForApi } from '@/lib/ui/normalize-question-form'
-import type { TaxonomyTag } from '@/lib/ui/mocks/m2m'
+import type { TaxonomyTag } from '@/types/taxonomy'
 
 function toFormInitialValues(q: Question): Partial<QuestionFormValues> {
-  // Seed taxonomies from the singular fields the API still returns, so
-  // the chip picker shows the existing tag on first load. Real m2m tags
-  // come from the API once BE lands the new endpoint.
-  const seedTag: TaxonomyTag | null = q.course_id
-    ? {
-        course_id: q.course_id,
-        course_name: q.course?.name ?? 'Course',
-        chapter_id: q.chapter_id ?? null,
-        chapter_name: q.chapter?.name ?? null,
-        topic_id: q.topic_id ?? null,
-        topic_name: q.topic?.name ?? null,
-        subject: q.subject as SubjectValue,
-        exam_type: q.exam_type as ExamTypeValue,
-      }
-    : null
+  // Strip name fields off the API rows before seeding the picker — the
+  // picker holds canonical id-only TaxonomyTag (names are rehydrated by
+  // the server on the next read).
+  const seedTags: TaxonomyTag[] = (q.taxonomies ?? []).map((row) => ({
+    course_id: row.course_id,
+    chapter_id: row.chapter_id ?? null,
+    topic_id: row.topic_id ?? null,
+    exam_type: row.exam_type,
+  }))
   return {
-    course_id: q.course_id ?? '',
-    chapter_id: (q.chapter_id ?? '') as QuestionFormValues['chapter_id'],
-    topic_id: (q.topic_id ?? '') as QuestionFormValues['topic_id'],
     subject: q.subject as SubjectValue,
-    taxonomies: seedTag ? [seedTag] : [],
+    taxonomies: seedTags,
     question_type: q.question_type as QuestionTypeValue,
     difficulty: q.difficulty as DifficultyValue,
-    exam_type: q.exam_type as ExamTypeValue,
     marks_correct: Number(q.marks_correct),
     marks_negative: Number(q.marks_negative),
     question_body: q.question_body,

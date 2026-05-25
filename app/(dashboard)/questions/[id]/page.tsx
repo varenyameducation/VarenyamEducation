@@ -11,7 +11,7 @@ import { ClientDate } from '@/components/ui/client-date'
 import { Separator } from '@/components/ui/separator'
 import { RenderedBody } from '@/lib/ui/render-body'
 import { apiGet, type Question } from '@/lib/ui/api'
-import { deriveQuestionTags, formatTagLabel } from '@/lib/ui/mocks/m2m'
+import { formatTagLabel } from '@/lib/ui/mocks/m2m'
 
 export default function QuestionDetailPage({ params }: { params: { id: string } }) {
   const { data, isLoading } = useQuery({
@@ -42,7 +42,7 @@ export default function QuestionDetailPage({ params }: { params: { id: string } 
   }
 
   const q = data.data
-  const tags = deriveQuestionTags(q)
+  const tags = q.taxonomies ?? []
 
   return (
     <div className="space-y-6">

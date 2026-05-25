@@ -5,7 +5,6 @@ import {
   useForm,
   FormProvider,
   Controller,
-  useWatch,
   type Resolver,
 } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -16,7 +15,8 @@ import {
   DIFFICULTIES,
   type QuestionFormValues,
 } from '@/lib/validation/question'
-import type { TaxonomyTag } from '@/lib/ui/mocks/m2m'
+import type { TaxonomyTag } from '@/types/taxonomy'
+import { formatTagFromMocks } from '@/lib/ui/mocks/m2m'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -53,32 +53,8 @@ export function QuestionForm({
     handleSubmit,
     register,
     control,
-    setValue,
     formState: { errors, isSubmitting },
   } = methods
-
-  const taxonomies = useWatch({ control, name: 'taxonomies' }) as TaxonomyTag[] | undefined
-
-  // Whenever the chip list changes, mirror the first tag into the legacy
-  // singular fields so the existing POST /api/questions submit path keeps
-  // working. Once BE m2m lands these fields go away.
-  React.useEffect(() => {
-    const list = taxonomies ?? []
-    const first = list[0]
-    setValue('course_id', first?.course_id ?? '', { shouldValidate: false })
-    setValue(
-      'chapter_id',
-      (first?.chapter_id ?? '') as QuestionFormValues['chapter_id'],
-      { shouldValidate: false },
-    )
-    setValue(
-      'topic_id',
-      (first?.topic_id ?? '') as QuestionFormValues['topic_id'],
-      { shouldValidate: false },
-    )
-    if (first?.subject) setValue('subject', first.subject, { shouldValidate: false })
-    if (first?.exam_type) setValue('exam_type', first.exam_type, { shouldValidate: false })
-  }, [taxonomies, setValue])
 
   return (
     <FormProvider {...methods}>
@@ -143,6 +119,7 @@ export function QuestionForm({
                 id="taxonomies"
                 value={(field.value ?? []) as TaxonomyTag[]}
                 onChange={field.onChange}
+                formatLabel={formatTagFromMocks}
                 error={fieldState.error?.message}
               />
             )}
