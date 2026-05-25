@@ -20,11 +20,24 @@ export interface TaxonomyTag {
   exam_type: ExamType
 }
 
-// Wire-format echo of a QuestionTaxonomy row from the API. Same fields as
-// TaxonomyTag plus the server-assigned identity columns.
+// Wire-format echo of a QuestionTaxonomy row from the API. Extends the input
+// shape with server-assigned identity columns + denormalized name fields so
+// the FE can render chip labels (e.g. "Class 8 — CBSE / Algebra Play /
+// Number Pyramids · jee") without a separate fetch of the courses tree.
+//
+// All name fields are optional because:
+//   (a) the FE bulk-retag flow constructs Row-shaped objects locally before
+//       the server round-trip, so it has IDs but not yet names; and
+//   (b) `chapter_name` / `topic_name` are themselves only present when the
+//       tag has a chapter/topic, and `subject` rides on Chapter so it's
+//       absent for course-level-only tags.
 export interface TaxonomyTagRow extends TaxonomyTag {
   id: string
   created_at: string
+  course_name?: string
+  chapter_name?: string | null
+  topic_name?: string | null
+  subject?: 'Physics' | 'Chemistry' | 'Maths' | 'Biology'
 }
 
 export interface InventoryCounts {
