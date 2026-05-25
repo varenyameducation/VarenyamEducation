@@ -178,9 +178,10 @@ async function handleDocumentImport(
   }
 
   // Upload referenced images to Supabase Storage and build a filename→URL map.
-  // Images that fail to upload are simply dropped from the placeholder set;
-  // the question body still imports without them.
+  // Failures get logged + surfaced in the import response so it's obvious when
+  // a bucket misconfiguration is silently dropping figures.
   const imageUrlByFilename = new Map<string, string>()
+  const imageUploadErrors: ImportError[] = []
   if (docxImages.length > 0) {
     const supabase = createSupabaseServerClient()
     const publicBase = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}`
@@ -189,17 +190,30 @@ async function handleDocumentImport(
       const { error: upErr } = await supabase.storage
         .from(STORAGE_BUCKET)
         .upload(path, img.data, { contentType: img.contentType, upsert: false })
-      if (upErr) continue
+      if (upErr) {
+        console.error(
+          `[import] image upload failed for ${img.filename} → ${path}:`,
+          upErr.message,
+        )
+        imageUploadErrors.push({
+          row: null,
+          reason: `Image "${img.filename}" upload failed: ${upErr.message}`,
+        })
+        continue
+      }
       imageUrlByFilename.set(img.filename, `${publicBase}/${path}`)
     }
   }
 
   const parsed = parseQuestionsFromParagraphs(paragraphs)
 
-  const errors: ImportError[] = parsed.errors.map((e) => ({
-    row: e.question_no,
-    reason: e.reason,
-  }))
+  const errors: ImportError[] = [
+    ...imageUploadErrors,
+    ...parsed.errors.map((e) => ({
+      row: e.question_no,
+      reason: e.reason,
+    })),
+  ]
 
   if (parsed.questions.length === 0) {
     return err(400, {
