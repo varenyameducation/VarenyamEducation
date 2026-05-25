@@ -8,34 +8,113 @@
 git config user.email   # must be snehachoukseyobc@gmail.com
 ```
 
-## Scope
+## Current task — Shared types, Zod, and duplicate-check for M2M taxonomy
 
-- `middleware.ts`, `lib/integrations/**`, `types/**`, `.env.example`, contract tests.
-- Out of scope: `app/**`, `components/**`, `lib/ui/**`, `app/api/**`, `lib/api/**`, `lib/db/**`, `prisma/**`, `docs/**`, `.agents/**`.
+**Sprint goal:** Provide the cross-cutting types, validators, and integration-layer updates that BE and FE both need for the M2M-taxonomy + blueprint sprint. You're the unblocker for both tracks.
 
-## Current task — Shared types, API envelope, Zod skeletons
+**Branch:** `integration/m2m-types-and-validators`
 
-**PRD references:** §4 (Database Schema), §6.1 (Response Envelope), §3.2 (JWT Token Specification), §3.3 (RBAC).
+### Track 1 — Shared types
 
-**Branch:** `integration/shared-types-and-api-envelope`
+- [ ] `types/taxonomy.ts` — new file. Export:
+  ```ts
+  export type ExamType = 'school' | 'board' | 'jee' | 'neet'
 
-**Acceptance criteria:**
-- [ ] `types/api.ts` exports `ApiResponse<T>`, `ApiSuccess<T>`, `ApiError` matching PRD §6.1 exactly. Plus an `ok(data)` and `fail(code, message, details?)` helper for backend convenience.
-- [ ] `types/domain.ts` exports interfaces for `Course`, `Chapter`, `Topic`, `User`, `Question`, `Test`, `TestQuestion`, `InstituteBrand` derived from PRD §4 (one TS interface per table, every column typed). UUIDs as `string` (branded type `Uuid` optional). Timestamps as `string` (ISO).
-- [ ] `types/auth.ts` exports `JwtPayload` (per PRD §3.2: `sub`, `email`, `role`, `name`, `iat`, `exp`, `iss`, `aud`) and `Role` union (`'super_admin' | 'admin' | 'teacher'` per PRD §3.3).
-- [ ] `lib/integrations/validation/taxonomy.ts` — Zod schemas for create/update Course, Chapter, Topic. Field constraints from PRD §4.1 (e.g. `grade` is integer 5–12; `stream` enum; `subject` enum on Chapter).
-- [ ] `lib/integrations/validation/common.ts` — reusable Zod helpers (`uuidSchema`, `paginationSchema` with `page`/`limit` per PRD §6.3).
-- [ ] `lib/integrations/supabase/client.ts` and `lib/integrations/supabase/server.ts` — minimal client factories using env vars from `.env.example`. No business logic here, just client construction.
-- [ ] No UI components. No API route handlers. No DB schema changes.
+  export interface TaxonomyTag {
+    course_id: string
+    chapter_id?: string | null
+    topic_id?: string | null
+    exam_type: ExamType
+  }
 
-**Workflow:**
-1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, `docs/PRD.md` (§3.2, §3.3, §4, §6.1, §6.3), `docs/AGENTS.md` (interface contracts section).
-2. `git checkout main && git pull && git checkout -b integration/shared-types-and-api-envelope`
-3. Implement. Type-check passes. No new runtime deps unless absolutely necessary; if added, update `package.json` and note it in status.
-4. Commit with `[INT]` prefix (e.g. `[INT] Add shared API envelope + ok/fail helpers (PRD §6.1)`, `[INT] Add domain types (PRD §4)`, `[INT] Add Zod schemas for taxonomy (PRD §4.1)`). **No `Co-Authored-By: Claude` footer. No robot emoji line.**
-5. Push. Note: `gh` CLI not installed — record the push output URL in status for orchestrator.
-6. Append entry to `.agents/status-integration.md` with branch name, files added, push URL.
-7. Run `~/report.sh integration "<short summary>"` to nudge orchestrator.
+  // Wire-format echo of QuestionTaxonomy row from BE, includes server-assigned id
+  export interface TaxonomyTagRow extends TaxonomyTag {
+    id: string
+    created_at: string
+  }
+
+  export interface InventoryCounts {
+    easy: number
+    medium: number
+    hard: number
+    advanced: number
+    total: number
+  }
+
+  export interface BlueprintSection {
+    label: string
+    blueprint: Partial<Record<'easy' | 'medium' | 'hard' | 'advanced', number>>
+    chapter_ids?: string[]
+    topic_ids?: string[]
+    question_type?: 'mcq' | 'numerical' | 'subjective' | 'multi_select'
+  }
+
+  export interface TestGenerateInput {
+    title: string
+    course_id: string
+    subject: 'Physics' | 'Chemistry' | 'Maths' | 'Biology'
+    exam_type: ExamType
+    duration_minutes: number
+    instructions?: string
+    sections: BlueprintSection[]
+  }
+  ```
+- [ ] Update `lib/ui/api.ts` — change `Question` interface:
+  - Remove the singular `course?: { id; name }`, `chapter?: { id; name }`, `topic?: { id; name }`, `exam_type` fields.
+  - Add `taxonomies: TaxonomyTagRow[]` (always present; can be empty array for legacy untagged rows).
+  - Keep `subject` as-is.
+- [ ] Search for every TS file that destructures `q.course_id` / `q.chapter_id` / `q.topic_id` / `q.exam_type` and either rewrite to use `q.taxonomies[0]?.…` or — if the location is in `components/**` or `app/(dashboard)/**` — flag in status for FE. **Do not edit FE or BE files directly.** Your edits are confined to `types/**`, `lib/integrations/**`, and `lib/ui/api.ts` (the shared types file, which is integration territory).
+
+### Track 2 — Zod schemas
+
+- [ ] `lib/integrations/validation/taxonomy-tag.ts` — Zod schema for `TaxonomyTag` and `TaxonomyTagRow`. Constraints:
+  - `course_id` UUID, required.
+  - `chapter_id`, `topic_id` UUID or null/omitted.
+  - `exam_type` enum of the four values.
+  - Refinement: if `topic_id` is set, `chapter_id` must also be set.
+- [ ] `lib/integrations/validation/blueprint.ts` — Zod schema for `TestGenerateInput`. Refinements:
+  - At least one section.
+  - Each section's blueprint has at least one positive count.
+  - `duration_minutes` ≥ 1.
+
+### Track 3 — Duplicate check refactor
+
+- [ ] `lib/integrations/similarity/duplicate-check.ts` — currently filters candidates by `course_id` / `chapter_id` from the Question table. Update to query candidates whose `question_taxonomies` share at least one course (or course+chapter if provided). Keep the same external function signature; only internals change. **Use the Prisma client through the existing `find` callback contract — don't import Prisma directly here.**
+
+### Track 4 — Seed script (small, optional but encouraged)
+
+- [ ] `scripts/seed-taxonomy.mjs` — a one-off seed (Node script, similar style to `scripts/bootstrap-admin.mjs`) that creates:
+  - 2 sample Courses: "Class 8 — CBSE" and "Class 8 — ICSE".
+  - 1 chapter per course: "Algebra Play" (or similar).
+  - 1 topic per chapter: "Number Pyramids".
+  - Re-runnable (upsert by `name + grade + stream` for Course; by `course_id + name` for Chapter; by `chapter_id + name` for Topic).
+  - Output: print IDs so the user can plug them into the import dialog without UI clicking.
+  - The script lives in `scripts/`. Do not auto-run it.
+
+### Scope
+
+- `types/**`, `lib/integrations/**`, `lib/ui/api.ts` (the shared API types only — not the React components in lib/ui/render-body etc.), `scripts/**`, `.env.example` if env additions are needed.
+- Out of scope: `app/**` (including `app/api/**`), `components/**`, `lib/api/**`, `lib/db/**`, `lib/auth/**`, `prisma/**`, `middleware.ts`, `lib/export/**`, `lib/ui/render-body.tsx`, `.agents/**`, `docs/**`.
+
+### Workflow
+
+1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, this brief.
+2. `git checkout main && git pull && git checkout -b integration/m2m-types-and-validators`
+3. Implement. Typecheck passes.
+4. Commit with `[INT]` prefix:
+   - `[INT] Shared TaxonomyTag/InventoryCounts/TestGenerateInput types`
+   - `[INT] Update Question wire type to expose taxonomies array`
+   - `[INT] Zod validators for taxonomy-tag and blueprint`
+   - `[INT] Duplicate check: filter by question_taxonomies join`
+   - `[INT] Seed script for sample CBSE/ICSE courses`
+   **No `Co-Authored-By: Claude` footer.**
+5. Push. Record `pull/new` URL.
+6. Append entry to `.agents/status-integration.md` with branch, commits, PR URL, list of FE/BE files that still consume the old `Question` shape (so other workers can rebase cleanly).
+7. Run `~/report.sh integration "<short summary>"`.
 8. **Stop.**
 
-**Note:** This PR is the unblocker for both backend and frontend. Backend's brief will reference imports from `types/api.ts` and `types/domain.ts`; frontend's brief will too. Get this in fast.
+### Hard rules
+
+- Your PR is the unblocker. Both FE and BE will import from `types/taxonomy.ts` and the validators. Land it fast — ideally before BE finishes its schema work.
+- Do not edit Prisma schema or migrations. Do not edit API route handlers. Do not edit React components.
+- If you find a contract ambiguity (e.g. should `exam_type` allow `'custom'` like `Test.exam_type` does?), default to the brief, document the assumption in status, and move on.
