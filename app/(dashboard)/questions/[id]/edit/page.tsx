@@ -16,13 +16,30 @@ import type {
 } from '@/lib/validation/question'
 import { apiGet, apiPatch, type Question } from '@/lib/ui/api'
 import { normalizeQuestionFormForApi } from '@/lib/ui/normalize-question-form'
+import type { TaxonomyTag } from '@/lib/ui/mocks/m2m'
 
 function toFormInitialValues(q: Question): Partial<QuestionFormValues> {
+  // Seed taxonomies from the singular fields the API still returns, so
+  // the chip picker shows the existing tag on first load. Real m2m tags
+  // come from the API once BE lands the new endpoint.
+  const seedTag: TaxonomyTag | null = q.course_id
+    ? {
+        course_id: q.course_id,
+        course_name: q.course?.name ?? 'Course',
+        chapter_id: q.chapter_id ?? null,
+        chapter_name: q.chapter?.name ?? null,
+        topic_id: q.topic_id ?? null,
+        topic_name: q.topic?.name ?? null,
+        subject: q.subject as SubjectValue,
+        exam_type: q.exam_type as ExamTypeValue,
+      }
+    : null
   return {
-    course_id: q.course_id ?? undefined,
-    chapter_id: q.chapter_id ?? undefined,
-    topic_id: q.topic_id ?? undefined,
+    course_id: q.course_id ?? '',
+    chapter_id: (q.chapter_id ?? '') as QuestionFormValues['chapter_id'],
+    topic_id: (q.topic_id ?? '') as QuestionFormValues['topic_id'],
     subject: q.subject as SubjectValue,
+    taxonomies: seedTag ? [seedTag] : [],
     question_type: q.question_type as QuestionTypeValue,
     difficulty: q.difficulty as DifficultyValue,
     exam_type: q.exam_type as ExamTypeValue,

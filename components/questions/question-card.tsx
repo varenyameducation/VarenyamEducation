@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { RenderedBody } from '@/lib/ui/render-body'
 import type { Question } from '@/lib/ui/api'
 import type { DifficultyValue } from '@/lib/validation/question'
+import { deriveQuestionTags, formatTagLabel } from '@/lib/ui/mocks/m2m'
 import { cn } from '@/lib/utils'
 
 const DIFFICULTY_STYLES: Record<DifficultyValue, string> = {
@@ -46,17 +47,40 @@ function escapeHtml(s: string): string {
 const OPTION_KEYS = ['option_a', 'option_b', 'option_c', 'option_d'] as const
 const OPTION_LETTERS = ['A', 'B', 'C', 'D'] as const
 
-export function QuestionCard({ q }: { q: Question }) {
+export interface QuestionCardProps {
+  q: Question
+  selected?: boolean
+  onToggleSelected?: () => void
+}
+
+export function QuestionCard({ q, selected, onToggleSelected }: QuestionCardProps) {
   const correctSet = React.useMemo(
     () => new Set((q.correct_option ?? []).map((c) => c.toUpperCase())),
     [q.correct_option],
   )
 
   const isMcq = q.question_type === 'mcq' || q.question_type === 'multi_select'
+  const tags = deriveQuestionTags(q)
+  const primaryTag = tags[0] ?? null
+  const overflowTags = tags.slice(1)
 
   return (
-    <article className="flex flex-col gap-3 rounded-md border bg-card p-4 shadow-sm">
+    <article
+      className={cn(
+        'flex flex-col gap-3 rounded-md border bg-card p-4 shadow-sm',
+        selected && 'border-primary ring-1 ring-primary/40',
+      )}
+    >
       <header className="flex flex-wrap items-center gap-2">
+        {onToggleSelected && (
+          <input
+            type="checkbox"
+            checked={Boolean(selected)}
+            onChange={onToggleSelected}
+            className="h-3.5 w-3.5"
+            aria-label={`Select question ${q.id}`}
+          />
+        )}
         <Badge variant="outline" className="font-mono uppercase">
           {q.question_type.replace('_', ' ')}
         </Badge>
@@ -64,9 +88,23 @@ export function QuestionCard({ q }: { q: Question }) {
           {q.difficulty}
         </Badge>
         <Badge variant="secondary">{q.subject}</Badge>
-        <Badge variant="outline" className="uppercase">
-          {q.exam_type}
-        </Badge>
+        {primaryTag && (
+          <span
+            className="inline-flex max-w-[42ch] items-center truncate rounded-full border border-primary/30 bg-primary/5 px-2 py-0.5 text-xs"
+            title={
+              overflowTags.length > 0
+                ? [primaryTag, ...overflowTags].map(formatTagLabel).join('\n')
+                : formatTagLabel(primaryTag)
+            }
+          >
+            <span className="truncate">{formatTagLabel(primaryTag)}</span>
+            {overflowTags.length > 0 && (
+              <span className="ml-1 shrink-0 font-medium text-primary">
+                +{overflowTags.length} more
+              </span>
+            )}
+          </span>
+        )}
         <span className="ml-auto text-xs text-muted-foreground">
           +{Number(q.marks_correct)} / −{Number(q.marks_negative)}
         </span>

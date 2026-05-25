@@ -11,6 +11,7 @@ import { ClientDate } from '@/components/ui/client-date'
 import { Separator } from '@/components/ui/separator'
 import { RenderedBody } from '@/lib/ui/render-body'
 import { apiGet, type Question } from '@/lib/ui/api'
+import { deriveQuestionTags, formatTagLabel } from '@/lib/ui/mocks/m2m'
 
 export default function QuestionDetailPage({ params }: { params: { id: string } }) {
   const { data, isLoading } = useQuery({
@@ -41,6 +42,7 @@ export default function QuestionDetailPage({ params }: { params: { id: string } 
   }
 
   const q = data.data
+  const tags = deriveQuestionTags(q)
 
   return (
     <div className="space-y-6">
@@ -52,9 +54,6 @@ export default function QuestionDetailPage({ params }: { params: { id: string } 
               {q.question_type.replace('_', ' ')}
             </Badge>
             <Badge variant="secondary">{q.subject}</Badge>
-            <Badge variant="outline" className="uppercase">
-              {q.exam_type}
-            </Badge>
             <Badge>{q.difficulty}</Badge>
           </div>
         </div>
@@ -69,6 +68,27 @@ export default function QuestionDetailPage({ params }: { params: { id: string } 
       </div>
 
       <article className="space-y-4 rounded-md border bg-card p-6">
+        {tags.length > 0 && (
+          <div className="-mt-1 flex flex-wrap gap-2 border-b pb-3">
+            {tags.map((tag, idx) => {
+              const href = tag.topic_id
+                ? `/questions?topic=${tag.topic_id}`
+                : tag.chapter_id
+                  ? `/questions?chapter=${tag.chapter_id}`
+                  : `/questions?course=${tag.course_id}`
+              return (
+                <Link
+                  key={`${tag.course_id}-${tag.chapter_id ?? 'x'}-${tag.topic_id ?? 'x'}-${tag.exam_type}-${idx}`}
+                  href={href}
+                  className="inline-flex items-center rounded-full border border-primary/30 bg-primary/5 px-2 py-0.5 text-xs hover:bg-primary/10"
+                  title={`Filter by ${formatTagLabel(tag)}`}
+                >
+                  {formatTagLabel(tag)}
+                </Link>
+              )
+            })}
+          </div>
+        )}
         <RenderedBody className="prose prose-sm max-w-none" body={q.question_body} />
         <Separator />
         <p className="text-xs text-muted-foreground">
