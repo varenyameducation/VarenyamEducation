@@ -66,6 +66,15 @@ export function RenderedBody({
   )
 }
 
+// For compact text-only previews (test creator picker, sortable list) where
+// embedding the full image would blow out the layout. Replaces every
+// [[IMG:url]] with a short "[image]" marker so the surrounding text stays
+// readable. Use the React `RenderedBody` component for full rendering.
+export function stripImagePlaceholders(body: string | null | undefined): string {
+  if (!body) return ''
+  return body.replace(IMG_RE, '[image]')
+}
+
 type Segment = { kind: 'text'; text: string } | { kind: 'img'; url: string }
 
 function splitBody(body: string): Segment[] {

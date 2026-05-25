@@ -6,6 +6,7 @@ import 'katex/dist/katex.min.css'
 import { AlertCircle } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
+import { stripImagePlaceholders } from '@/lib/ui/render-body'
 import type { Question } from '@/lib/ui/api'
 import type { DifficultyValue } from '@/lib/validation/question'
 
@@ -126,7 +127,7 @@ export function QuestionResultsList({
                   <div
                     className="text-sm text-foreground/90"
                     dangerouslySetInnerHTML={{
-                      __html: renderInline(truncate(q.question_body)),
+                      __html: renderInline(truncate(stripImagePlaceholders(q.question_body))),
                     }}
                   />
                 </div>

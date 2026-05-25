@@ -25,6 +25,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+import { stripImagePlaceholders } from '@/lib/ui/render-body'
 import type { Question } from '@/lib/ui/api'
 
 const LATEX_TOKEN = /\\[a-zA-Z]+|[\$\^_{}]/
@@ -208,7 +209,7 @@ function SortableRow({
         <div
           className="text-sm text-foreground/90"
           dangerouslySetInnerHTML={{
-            __html: renderInline(truncate(item.question.question_body)),
+            __html: renderInline(truncate(stripImagePlaceholders(item.question.question_body))),
           }}
         />
         <div className="flex flex-wrap items-center gap-2 pt-1">
