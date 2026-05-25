@@ -2,6 +2,35 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-25 19:30 — frontend/multitax-blueprint-paper (rebased onto main, +1 commit)
+- DONE: Rebased the m2m sprint branch onto `origin/main` (now at 1fbdfa6 = INT joined-names + BE joined-names merged). Resolved the `lib/ui/api.ts` conflict by taking main's side (canonical `Question.taxonomies: TaxonomyTagRow[]`, legacy `course/chapter/topic` joined fields dropped, `ExamTypeValue` import dropped). Then a single fixup commit `4d3977f [FE] Migrate to canonical TaxonomyTagRow from @/types/taxonomy` cascade-fixes every consumer:
+  - `lib/ui/mocks/m2m.ts` — local `TaxonomyTag` type deleted; re-export canonical `TaxonomyTag` / `TaxonomyTagRow` / `InventoryCounts` / `BlueprintSection` plus a `GenerateTestPayload` alias for `TestGenerateInput`. `deriveQuestionTags` + `LegacyTaggedQuestion` deleted (callers now read `q.taxonomies` directly). `MOCK_M2M_TAGS_BY_QUESTION` rewritten as `TaxonomyTagRow[]` with hardcoded `id` / `created_at`. `mockInventoryCounts` returns the canonical flat shape. New helper `formatTagFromMocks(tag: TaxonomyTag)` renders id-only chips using the in-memory course/chapter/topic mock tables — used by both the question form and the bulk-retag modal during edit.
+  - `components/questions/taxonomy-tag-picker.tsx` — internal state is canonical id-only `TaxonomyTag`. New `formatLabel?: (TaxonomyTag) => string` prop (default falls back to topic_id → chapter_id → course_id).
+  - `lib/validation/question.ts` — `taxonomyTagSchema` is now id-only (course_id, chapter_id?, topic_id?, exam_type). Form schema drops the legacy `course_id`/`chapter_id`/`topic_id`/`exam_type` top-level fields.
+  - `components/questions/question-form.tsx` — drop the legacy field-sync effect; pass `formatTagFromMocks` to the picker.
+  - `components/questions/bulk-retag-modal.tsx` — same picker treatment; payload sends id-only tags.
+  - `components/questions/question-card.tsx` + `app/(dashboard)/questions/[id]/page.tsx` — swap `deriveQuestionTags(q)` for `q.taxonomies`. `formatTagLabel` now reads server-provided names directly.
+  - `app/(dashboard)/questions/[id]/edit/page.tsx` — `seedTags = q.taxonomies.map(strip-id/created_at/names)` directly.
+  - `app/(dashboard)/questions/page.tsx` — `q.course?.id` / `q.chapter?.id` / `q.topic?.id` gone. Filter (left-tree selection) does **multi-tag OR** so a question tagged into two slices appears in both. The grouped/expanded view groups each question by its **first** tag (primary-tag policy) so we don't duplicate cards across courses. `buildCounts` and `buildTree` rewritten to walk `q.taxonomies`.
+  - `components/tests/blueprint-builder.tsx` — section payload now uses canonical `blueprint` field (not `difficulty`). `InventoryCounts` is flat so `counts?.[d.value]` replaces `counts?.by_difficulty[d.value]`. Question-type dropdown narrowed to the four canonical types (matrix_match excluded — not blueprint-sampleable).
+- Type-check: ran `node node_modules/typescript/bin/tsc --noEmit` in `/mnt/d/varenyam-fe`. Zero errors across `app/(dashboard)`, `components/`, `lib/ui`, `lib/validation`, `types/`. Remaining failures are all out of FE scope:
+  - `app/api/**` — owned by BE; the FE worktree's Prisma client wasn't regenerated after BE's schema migration (the `questionTaxonomy` model + `question_taxonomies` relation are unknown to local prisma). BE PR cleaned the route files but the regen step has to happen in this worktree before the typecheck is clean here.
+  - `lib/export/docx.ts` + `lib/export/pdf.ts` — `Cannot find module 'docx'` / `'puppeteer'`. Those packages are installed in `/mnt/d/varenyam/node_modules` but not in this FE worktree's. Pre-existing across earlier rounds; the production build uses the canonical worktree's node_modules.
+  - Main worktree (`/mnt/d/varenyam` on `main`) also shows the legacy `q.course_id` / `q.exam_type` references in `app/(dashboard)/**` that this PR resolves — i.e. main is currently FE-broken; this rebase is the fix.
+- Commits on branch (`git log origin/main..HEAD`):
+  - `4d3977f [FE] Migrate to canonical TaxonomyTagRow from @/types/taxonomy`
+  - `13d0663 [FE] Status: M2M sprint branch ready (push pending creds)`
+  - `987c0cd [FE] Test creator blueprint mode + inventory hints`
+  - `5597e20 [FE] Bulk retag modal on question bank`
+  - `9737bb0 [FE] TaxonomyTagPicker + question form/detail/card multi-tag UI`
+  - `7cea78e [FE] Paper template redesign — branded header, section bars, image caps`
+- PR: still **pending force-push**. `git push --force-with-lease origin frontend/multitax-blueprint-paper` from `/mnt/d/varenyam-fe` blew up again with the worktree-gitdir credential-manager bug — error includes `fatal: not a git repository: /mnt/d/varenyam/.git/worktrees/varenyam-fe` plus `could not read Username`. Brief flagged this might happen; orchestrator/user should force-push from a logged-in shell. Existing branch on origin (`origin/frontend/multitax-blueprint-paper`) is the pre-rebase tip and is **safe to overwrite** — `--force-with-lease` will check against the recorded upstream sha before pushing.
+- BLOCKED ON: orchestrator/human to force-push (credential prompt). Otherwise nothing.
+- NOTES:
+  - Did not touch `types/taxonomy.ts` (INT's), `app/api/**` (BE's), `prisma/**`, `middleware.ts`, or `lib/integrations/**`.
+  - The `subject` field on `BlueprintSection` is no longer typed on the canonical `BlueprintSection`, but `TestGenerateInput.subject` is still required at the top level (one subject per generated test). The blueprint builder keeps the subject selector at the test-meta level.
+  - The bulk-retag payload no longer ships `subject` per tag — canonical `TaxonomyTag` is id-only. If BE still wants the subject server-side it can read it off the chapter row. Flag if mismatch.
+
 ## 2026-05-25 18:15 — frontend/multitax-blueprint-paper
 - DONE: M2M sprint, three tracks on one branch (4 commits):
   - `1585dde [FE] Paper template redesign` — branded header (logo or LOGO placeholder + centered inst_name/tagline + Roll No./Name stub on PDF), brand-color 2pt divider, 3-col meta row, brand-color filled section bars with computed blueprint summary `(Q1–Q5 · 5 × 2 = 10 marks)`, MCQ 2-col grid (Table in DOCX), dotted answer lines scaled by marks (cap 6), brand-color top-border footer with `footer_text · inst_name · Page X of Y`. Both `lib/export/PaperTemplate.tsx` and `lib/export/docx.ts` produce parallel output; PDF chrome footer in `lib/export/pdf.ts` also updated.
