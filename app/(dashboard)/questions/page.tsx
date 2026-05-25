@@ -13,10 +13,12 @@ import {
   ListTree,
   Plus,
   RefreshCw,
+  Tags,
   Upload,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { QuestionCard } from '@/components/questions/question-card'
+import { BulkRetagModal } from '@/components/questions/bulk-retag-modal'
 import { apiGet, type Paginated, type Question } from '@/lib/ui/api'
 import { cn } from '@/lib/utils'
 
@@ -52,6 +54,8 @@ function useAllQuestions() {
 
 export default function QuestionsListPage() {
   const [selection, setSelection] = React.useState<Selection>({ kind: 'all' })
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set())
+  const [retagOpen, setRetagOpen] = React.useState(false)
 
   const coursesQuery = useQuery({
     queryKey: ['taxonomy', 'courses'],
@@ -77,6 +81,31 @@ export default function QuestionsListPage() {
     }
     return allItems.filter((q) => q.topic?.id === selection.topicId)
   }, [allItems, selection])
+
+  const toggleSelected = React.useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
+
+  const clearSelection = React.useCallback(() => setSelectedIds(new Set()), [])
+
+  const allVisibleSelected =
+    visible.length > 0 && visible.every((q) => selectedIds.has(q.id))
+  const toggleSelectVisible = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (allVisibleSelected) {
+        for (const q of visible) next.delete(q.id)
+      } else {
+        for (const q of visible) next.add(q.id)
+      }
+      return next
+    })
+  }
 
   return (
     <div className="space-y-5">
@@ -125,6 +154,56 @@ export default function QuestionsListPage() {
           </div>
         </div>
       )}
+
+      {visible.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/30 px-3 py-2 text-xs">
+          <label className="flex cursor-pointer items-center gap-2">
+            <input
+              type="checkbox"
+              checked={allVisibleSelected}
+              onChange={toggleSelectVisible}
+              className="h-3.5 w-3.5"
+              aria-label="Select all visible"
+            />
+            {allVisibleSelected ? 'All visible selected' : 'Select all visible'}
+          </label>
+          <span className="text-muted-foreground">·</span>
+          <span>
+            <strong>{selectedIds.size}</strong> selected
+          </span>
+          {selectedIds.size > 0 && (
+            <>
+              <span className="text-muted-foreground">·</span>
+              <button
+                type="button"
+                onClick={clearSelection}
+                className="text-muted-foreground hover:underline"
+              >
+                Clear
+              </button>
+            </>
+          )}
+          <div className="ml-auto flex items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setRetagOpen(true)}
+              disabled={selectedIds.size === 0}
+            >
+              <Tags className="mr-1.5 h-3.5 w-3.5" />
+              Move/Copy to…
+            </Button>
+          </div>
+        </div>
+      )}
+
+      <BulkRetagModal
+        open={retagOpen}
+        onOpenChange={setRetagOpen}
+        questionIds={Array.from(selectedIds)}
+        onSuccess={clearSelection}
+      />
 
       <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
         <aside>
@@ -176,6 +255,8 @@ export default function QuestionsListPage() {
             visible={visible}
             isLoading={questionsQuery.isLoading}
             onSelect={setSelection}
+            selectedIds={selectedIds}
+            onToggleSelected={toggleSelected}
           />
         </section>
       </div>
@@ -190,6 +271,8 @@ function ContentPanel({
   visible,
   isLoading,
   onSelect,
+  selectedIds,
+  onToggleSelected,
 }: {
   selection: Selection
   courses: CourseNode[]
@@ -197,6 +280,8 @@ function ContentPanel({
   visible: QuestionWithTaxonomy[]
   isLoading: boolean
   onSelect: (s: Selection) => void
+  selectedIds: Set<string>
+  onToggleSelected: (id: string) => void
 }) {
   if (isLoading) {
     return (
@@ -227,7 +312,12 @@ function ContentPanel({
               Pick a topic in the left tree to focus, or expand a course below
             </span>
           </div>
-          <GroupedView items={visible} onSelect={onSelect} />
+          <GroupedView
+            items={visible}
+            onSelect={onSelect}
+            selectedIds={selectedIds}
+            onToggleSelected={onToggleSelected}
+          />
         </div>
       </div>
     )
@@ -240,6 +330,8 @@ function ContentPanel({
       courses={courses}
       counts={counts}
       onSelect={onSelect}
+      selectedIds={selectedIds}
+      onToggleSelected={onToggleSelected}
     />
   )
 }
@@ -281,12 +373,16 @@ function FocusedTopicView({
   courses,
   counts,
   onSelect,
+  selectedIds,
+  onToggleSelected,
 }: {
   selection: Exclude<Selection, { kind: 'all' }>
   visible: QuestionWithTaxonomy[]
   courses: CourseNode[]
   counts: Counts
   onSelect: (s: Selection) => void
+  selectedIds: Set<string>
+  onToggleSelected: (id: string) => void
 }) {
   const course = courses.find((c) => c.id === selection.courseId)
   return (
@@ -336,7 +432,14 @@ function FocusedTopicView({
             .
           </div>
         ) : (
-          visible.map((q) => <QuestionCard key={q.id} q={q} />)
+          visible.map((q) => (
+            <QuestionCard
+              key={q.id}
+              q={q}
+              selected={selectedIds.has(q.id)}
+              onToggleSelected={() => onToggleSelected(q.id)}
+            />
+          ))
         )}
       </div>
     </div>
@@ -611,9 +714,13 @@ function ChapterTreeRow({
 function GroupedView({
   items,
   onSelect,
+  selectedIds,
+  onToggleSelected,
 }: {
   items: QuestionWithTaxonomy[]
   onSelect: (s: Selection) => void
+  selectedIds: Set<string>
+  onToggleSelected: (id: string) => void
 }) {
   const tree = React.useMemo(() => buildTree(items), [items])
   return (
@@ -677,7 +784,12 @@ function GroupedView({
                         </div>
                         <div className="grid gap-3">
                           {topicGroup.questions.map((q) => (
-                            <QuestionCard key={q.id} q={q} />
+                            <QuestionCard
+                              key={q.id}
+                              q={q}
+                              selected={selectedIds.has(q.id)}
+                              onToggleSelected={() => onToggleSelected(q.id)}
+                            />
                           ))}
                         </div>
                       </div>
