@@ -1,0 +1,54 @@
+// Shared taxonomy + blueprint types for the M2M sprint.
+//
+// Read by BE (route handlers / validators) and FE (forms, results lists,
+// blueprint builder). Lives in `types/**` so neither side has to import
+// across role boundaries — integration owns this file.
+
+export type ExamType = 'school' | 'board' | 'jee' | 'neet'
+
+export type Difficulty = 'easy' | 'medium' | 'hard' | 'advanced'
+
+export type QuestionType = 'mcq' | 'numerical' | 'subjective' | 'multi_select'
+
+// One taxonomy tag, as posted from the client. `chapter_id` and `topic_id`
+// are optional, with the constraint that a topic always implies a chapter
+// (enforced in the Zod schema, not the type).
+export interface TaxonomyTag {
+  course_id: string
+  chapter_id?: string | null
+  topic_id?: string | null
+  exam_type: ExamType
+}
+
+// Wire-format echo of a QuestionTaxonomy row from the API. Same fields as
+// TaxonomyTag plus the server-assigned identity columns.
+export interface TaxonomyTagRow extends TaxonomyTag {
+  id: string
+  created_at: string
+}
+
+export interface InventoryCounts {
+  easy: number
+  medium: number
+  hard: number
+  advanced: number
+  total: number
+}
+
+export interface BlueprintSection {
+  label: string
+  blueprint: Partial<Record<Difficulty, number>>
+  chapter_ids?: string[]
+  topic_ids?: string[]
+  question_type?: QuestionType
+}
+
+export interface TestGenerateInput {
+  title: string
+  course_id: string
+  subject: 'Physics' | 'Chemistry' | 'Maths' | 'Biology'
+  exam_type: ExamType
+  duration_minutes: number
+  instructions?: string
+  sections: BlueprintSection[]
+}
