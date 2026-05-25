@@ -8,33 +8,109 @@
 git config user.email   # must be snehachoukseyobc@gmail.com
 ```
 
-## Scope
+## Current task — Populate joined-name fields on taxonomy responses
 
-- `app/api/**`, `lib/api/**`, `lib/db/**`, `lib/auth/**`, `prisma/**`.
-- Out of scope: `app/**` outside `app/api`, `components/**`, `lib/ui/**`, `middleware.ts`, `lib/integrations/**`, `types/**`, `docs/**`, `.agents/**`.
+**Why:** PRs #22 (INT shared types) and #23 (BE m2m API) shipped `taxonomies: TaxonomyTagRow[]` on `/api/questions` responses with ID-only rows. The FE PR (`frontend/multitax-blueprint-paper`, currently in conflict with main) needs human-readable chip labels and cannot afford an extra round-trip to fetch the course/chapter/topic tree on every question render. INT is extending `TaxonomyTagRow` with optional name fields on branch `integration/joined-names-on-tag-row`; **your job is to populate those fields from the Prisma `include`**.
 
-## Current task — Taxonomy schema + CRUD APIs
+**Branch:** `backend/joined-names-on-tag-row`
 
-**PRD references:** §4.1 (Core Taxonomy Tables), §6.2 (Taxonomy Endpoints), §7.1 (Module spec), §10.2 (Acceptance criteria), §3.3 (RBAC roles).
+**Base off:** `integration/joined-names-on-tag-row` (so your code typechecks against the new interface). Rebase to `main` if INT has merged by the time you start.
 
-**Branch:** `backend/taxonomy-schema-and-api`
+### Schema check
 
-**Acceptance criteria:**
-- [ ] Prisma schema models for `Course`, `Chapter`, `Topic` matching PRD §4.1 exactly (UUID PKs, soft-delete `deleted_at`, `created_by` FK to users, ordering columns `chapter_no` / `topic_no`, indexes on `course_id` / `chapter_id`).
-- [ ] Migration generated and committed (do NOT run against a real DB — just `prisma migrate dev --create-only` so the migration file lands).
-- [ ] All 12 endpoints from PRD §6.2 implemented under `app/api/taxonomy/courses`, `app/api/taxonomy/chapters`, `app/api/taxonomy/topics`. List endpoints (GET) accessible to any authenticated user; mutations gated to `admin` / `super_admin`; DELETE gated to `super_admin` only per PRD §6.2 auth column.
-- [ ] All endpoints return the response envelope from `types/api.ts` (depend on `integration/shared-types-and-api-envelope` PR — if not yet merged, define a local `ApiResponse<T>` matching PRD §6.1 inline and add a `// TODO: replace with import from types/api.ts once #N merges` comment).
-- [ ] Soft-delete cascades implemented per PRD §7.1 business rules: deleting a Course cascades to Chapters + Topics; deleting a Chapter cascades to Topics. Cascading is at the application level (set `deleted_at`) — do NOT use Prisma `onDelete: Cascade` since these are soft deletes.
-- [ ] Topic deletion blocked when questions reference it (PRD §7.1: "If a Topic has questions attached, it cannot be deleted — must be archived instead"). Return `ApiError` with code `TOPIC_HAS_QUESTIONS`.
-- [ ] Request bodies validated with Zod (use schemas from `lib/integrations/validation/taxonomy.ts` if available; otherwise define inline and flag as a follow-up).
-- [ ] No UI work. No middleware edits.
+- No Prisma changes. The `QuestionTaxonomy` model already has FK relations to `Course`, `Chapter?`, `Topic?`. You just need to `select` their names.
 
-**Workflow:**
-1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, `docs/PRD.md` (§3.3, §4.1, §6.1, §6.2, §7.1, §10.2), `docs/AGENTS.md`.
-2. `git checkout main && git pull && git checkout -b backend/taxonomy-schema-and-api`
-3. Implement. Run `npx prisma generate` + typecheck.
-4. Commit with `[BE]` prefix per file group (e.g. `[BE] Add taxonomy Prisma schema (PRD §4.1)`, `[BE] Add taxonomy CRUD endpoints (PRD §6.2)`). **No `Co-Authored-By: Claude` footer. No robot emoji line.**
-5. Push. Since `gh` CLI is not installed, the push will print a GitHub URL with `pull/new`; copy it into the PR body via the printed link or note the branch URL.
-6. Append entry to `.agents/status-backend.md` with branch name, commit SHAs, and PR URL (or "PR pending — gh not installed, push URL: ...").
-7. Run `~/report.sh backend "<short summary>"` to nudge orchestrator.
-8. **Stop.**
+### Changes — `/api/questions/route.ts`
+
+- [ ] Extend `taxonomySelect`:
+
+  ```ts
+  const taxonomySelect = {
+    id: true,
+    course_id: true,
+    chapter_id: true,
+    topic_id: true,
+    exam_type: true,
+    created_at: true,
+    course:  { select: { id: true, name: true } },
+    chapter: { select: { id: true, name: true, subject: true } },
+    topic:   { select: { id: true, name: true } },
+  } as const
+  ```
+
+- [ ] Update `TaxonomyRow` (the local type) to reflect the new shape so TS stays happy.
+
+- [ ] Update `withTaxonomies()` to flatten the nested includes into the row:
+
+  ```ts
+  function withTaxonomies<T extends { question_taxonomies: TaxonomyRow[] }>(question: T) {
+    const { question_taxonomies, ...rest } = question
+    return {
+      ...rest,
+      taxonomies: question_taxonomies.map((t) => ({
+        id: t.id,
+        course_id: t.course_id,
+        chapter_id: t.chapter_id,
+        topic_id: t.topic_id,
+        exam_type: t.exam_type,
+        created_at: t.created_at,
+        course_name: t.course?.name,
+        chapter_name: t.chapter?.name ?? null,
+        topic_name: t.topic?.name ?? null,
+        subject: t.chapter?.subject as 'Physics' | 'Chemistry' | 'Maths' | 'Biology' | undefined,
+      })),
+    }
+  }
+  ```
+
+  The shape returned now matches the extended `TaxonomyTagRow` from `@/types/taxonomy`. Keep the field names exactly aligned with INT's interface.
+
+### Changes — `/api/questions/[id]/route.ts` (PATCH + GET if applicable)
+
+- [ ] Apply the same `taxonomySelect` + `withTaxonomies()` updates. If `withTaxonomies` is duplicated, factor it into `lib/api/questions.ts` and re-import from both routes. If it's already imported, just update the one definition.
+
+### Changes — `/api/questions/[id]/taxonomies/route.ts` (POST add tag)
+
+- [ ] After insert, the route returns the new tag. Update its response to include the joined names by re-querying or by passing the include into the Prisma create.
+
+### Changes — `/api/questions/bulk/retag/route.ts`
+
+- [ ] If this route returns updated tags, include names. If it returns only counts (`{ added, removed }`), leave it alone.
+
+### Changes — `/api/questions/[id]/taxonomies/[taxonomyId]/route.ts` (DELETE)
+
+- [ ] Probably returns `{ ok: true }` — no shape change. Skim and confirm.
+
+### What you do NOT change
+
+- `types/taxonomy.ts` is INT's. Do not edit.
+- The Zod input schema (`lib/integrations/validation/taxonomy-tag.ts`) is INT's; it must still reject the new name fields on input (server populates them on output only).
+- FE files (`lib/ui/**`, `components/**`, `app/(dashboard)/**`).
+
+### Validation
+
+- [ ] `npx prisma generate` clean.
+- [ ] `npx tsc --noEmit` clean (your worktree may not have INT's branch checked out yet — if you typecheck against current main and the new field references are flagged as unknown on `TaxonomyTagRow`, that's expected; rebase onto `integration/joined-names-on-tag-row` first or wait for it to merge).
+
+### Workflow
+
+1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, and this brief.
+2. Check if INT's `integration/joined-names-on-tag-row` has merged to main:
+   ```
+   git fetch origin
+   git log origin/main --oneline -5 | grep -i "joined-names" || echo "INT not merged yet — base off integration/joined-names-on-tag-row"
+   ```
+   - If merged: `git checkout main && git pull && git checkout -b backend/joined-names-on-tag-row`
+   - If not: `git checkout origin/integration/joined-names-on-tag-row -b backend/joined-names-on-tag-row` (you will rebase to main once INT lands)
+3. Make changes. One commit per route file or one combined commit — your call. Use `[BE]` prefix and no Claude footer.
+4. Push. Print the `pull/new/` URL.
+5. Append entry to `.agents/status-backend.md` with branch, commit list, PR URL.
+6. Run `~/report.sh backend "<short summary>"`.
+7. **Stop.**
+
+### Hard rules
+
+- Do not touch `prisma/schema.prisma`. No new migration.
+- Do not edit `types/taxonomy.ts`. That is INT's.
+- Do not touch FE files.
+- The wire shape returned from `/api/questions` MUST be a superset of what shipped in #23 (additive only). No fields removed.

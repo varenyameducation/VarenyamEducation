@@ -8,34 +8,62 @@
 git config user.email   # must be snehachoukseyobc@gmail.com
 ```
 
-## Scope
+## Current task — Add joined-name fields to TaxonomyTagRow
 
-- `middleware.ts`, `lib/integrations/**`, `types/**`, `.env.example`, contract tests.
-- Out of scope: `app/**`, `components/**`, `lib/ui/**`, `app/api/**`, `lib/api/**`, `lib/db/**`, `prisma/**`, `docs/**`, `.agents/**`.
+**Why:** The M2M sprint shipped `TaxonomyTagRow` as ID-only — `{ id, course_id, chapter_id?, topic_id?, exam_type, created_at }`. The FE PR (#frontend/multitax-blueprint-paper, currently in conflict) needs to render human-readable chip labels like *"Class 8 — CBSE / Algebra Play / Number Pyramids · jee"*, but the wire shape exposes no names. To unblock FE without forcing it to do an extra round-trip for the courses/chapters/topics tree, the API will start including denormalized name fields on each tag. **You own the type contract for those new fields.**
 
-## Current task — Shared types, API envelope, Zod skeletons
+**Branch:** `integration/joined-names-on-tag-row`
 
-**PRD references:** §4 (Database Schema), §6.1 (Response Envelope), §3.2 (JWT Token Specification), §3.3 (RBAC).
+**Base off:** `main` (after PRs #22/#23 merged — confirm `git log origin/main --oneline -3` shows the BE m2m merge before branching).
 
-**Branch:** `integration/shared-types-and-api-envelope`
+### Track 1 — Extend `TaxonomyTagRow`
 
-**Acceptance criteria:**
-- [ ] `types/api.ts` exports `ApiResponse<T>`, `ApiSuccess<T>`, `ApiError` matching PRD §6.1 exactly. Plus an `ok(data)` and `fail(code, message, details?)` helper for backend convenience.
-- [ ] `types/domain.ts` exports interfaces for `Course`, `Chapter`, `Topic`, `User`, `Question`, `Test`, `TestQuestion`, `InstituteBrand` derived from PRD §4 (one TS interface per table, every column typed). UUIDs as `string` (branded type `Uuid` optional). Timestamps as `string` (ISO).
-- [ ] `types/auth.ts` exports `JwtPayload` (per PRD §3.2: `sub`, `email`, `role`, `name`, `iat`, `exp`, `iss`, `aud`) and `Role` union (`'super_admin' | 'admin' | 'teacher'` per PRD §3.3).
-- [ ] `lib/integrations/validation/taxonomy.ts` — Zod schemas for create/update Course, Chapter, Topic. Field constraints from PRD §4.1 (e.g. `grade` is integer 5–12; `stream` enum; `subject` enum on Chapter).
-- [ ] `lib/integrations/validation/common.ts` — reusable Zod helpers (`uuidSchema`, `paginationSchema` with `page`/`limit` per PRD §6.3).
-- [ ] `lib/integrations/supabase/client.ts` and `lib/integrations/supabase/server.ts` — minimal client factories using env vars from `.env.example`. No business logic here, just client construction.
-- [ ] No UI components. No API route handlers. No DB schema changes.
+- [ ] `types/taxonomy.ts` — add optional joined-name fields to `TaxonomyTagRow` (and **only** `TaxonomyTagRow`; `TaxonomyTag` stays input-only and unchanged):
 
-**Workflow:**
-1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, `docs/PRD.md` (§3.2, §3.3, §4, §6.1, §6.3), `docs/AGENTS.md` (interface contracts section).
-2. `git checkout main && git pull && git checkout -b integration/shared-types-and-api-envelope`
-3. Implement. Type-check passes. No new runtime deps unless absolutely necessary; if added, update `package.json` and note it in status.
-4. Commit with `[INT]` prefix (e.g. `[INT] Add shared API envelope + ok/fail helpers (PRD §6.1)`, `[INT] Add domain types (PRD §4)`, `[INT] Add Zod schemas for taxonomy (PRD §4.1)`). **No `Co-Authored-By: Claude` footer. No robot emoji line.**
-5. Push. Note: `gh` CLI not installed — record the push output URL in status for orchestrator.
-6. Append entry to `.agents/status-integration.md` with branch name, files added, push URL.
-7. Run `~/report.sh integration "<short summary>"` to nudge orchestrator.
+  ```ts
+  export interface TaxonomyTagRow extends TaxonomyTag {
+    id: string
+    created_at: string
+    // Joined names — populated by GET / POST / PATCH /api/questions responses
+    // so the FE can render chip labels without a separate fetch. All optional
+    // because (a) the FE bulk-retag flow constructs Row-shaped objects locally
+    // before the round-trip, and (b) chapter/topic are themselves optional.
+    course_name?: string
+    chapter_name?: string | null
+    topic_name?: string | null
+    subject?: 'Physics' | 'Chemistry' | 'Maths' | 'Biology'
+  }
+  ```
+
+  `subject` here is the chapter's `subject` column (Chapters carry subject in the schema). It's added on `TaxonomyTagRow` so the FE can chip-label "Maths / Algebra Play" without crossing back to the Question. Keep it optional so callers that don't have a chapter (course-level-only tag) can omit it.
+
+### Track 2 — Zod validator (input side)
+
+- [ ] `lib/integrations/validation/taxonomy-tag.ts` — DO NOT add the new name fields to the input `TaxonomyTag` Zod schema. They are output-only (server populates, client reads). The existing `taxonomyTagSchema` should continue to reject unknown fields via `.strict()` so a confused FE doesn't try to POST `course_name` and have it silently ignored. If the existing schema is `.passthrough()` or default-open, switch it to `.strict()` in the same commit and add a 1-line comment explaining why.
+
+### Track 3 — Sanity: no other type updates
+
+- The `withTaxonomies()` helper that flattens `question_taxonomies` → `taxonomies` lives in BE (`app/api/questions/route.ts`). You do **not** touch it — BE will update it on its own follow-up branch (`backend/joined-names-on-tag-row`) to populate the new fields.
+- Do not touch `lib/ui/**` — FE owns that. Your contract change is announced in the status entry so FE knows what to consume.
+- The `InventoryCounts`, `BlueprintSection`, `TestGenerateInput` interfaces stay as-is. Only `TaxonomyTagRow` changes this sprint.
+
+### Validation
+
+- [ ] `npx tsc --noEmit` clean from your worktree (`/mnt/d/varenyam-int` if available, else from wherever you check out).
+
+### Workflow
+
+1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, and this brief.
+2. `git fetch origin && git checkout main && git pull && git checkout -b integration/joined-names-on-tag-row`
+3. Make the type + Zod changes. Single commit is fine, or split if you prefer.
+4. Commit with `[INT]` prefix (e.g. `[INT] Add joined-name fields to TaxonomyTagRow`). **No `Co-Authored-By: Claude`, no AI footer.**
+5. Push. Print the `pull/new/` URL for orchestrator/admin to open via web (no `gh` CLI on this machine).
+6. Append entry to `.agents/status-integration.md`: branch, commit list, PR URL, and a "Contract change" block listing the new fields so BE+FE know what's available.
+7. Run `~/report.sh integration "<short summary>"` — note the pane mapping in this layout (integration is in pane 3, not pane 2). If the helper fails with `can't find pane: 3`, ignore — the status file is the source of truth and the orchestrator will read it.
 8. **Stop.**
 
-**Note:** This PR is the unblocker for both backend and frontend. Backend's brief will reference imports from `types/api.ts` and `types/domain.ts`; frontend's brief will too. Get this in fast.
+### Hard rules
+
+- One PR for this task. Do not bundle unrelated cleanups.
+- Do not touch `app/api/**` or `lib/ui/**` or `prisma/**`.
+- Do not modify `TaxonomyTag` (the input type). It stays exactly as it shipped in #22.

@@ -8,33 +8,120 @@
 git config user.email   # must be snehachoukseyobc@gmail.com
 ```
 
-## Scope
+## Current task — Resolve m2m PR conflict; consume joined-name fields
 
-- `app/**` (UI pages, layouts, NOT `app/api/**`), `components/**`, `tailwind.config.ts`, `postcss.config.js`, `lib/ui/**`.
-- Out of scope: `app/api/**`, `lib/api/**`, `lib/db/**`, `lib/auth/**`, `prisma/**`, `middleware.ts`, `lib/integrations/**`, `types/**`, `docs/**`, `.agents/**`.
+**Why:** The frontend M2M PR (`frontend/multitax-blueprint-paper`, 5 commits, already pushed) has a textual conflict with main in `lib/ui/api.ts` plus a deeper type mismatch:
 
-## Current task — Taxonomy Manager UI shells (against mocks)
+- FE built against a local mock `TaxonomyTag` in `@/lib/ui/mocks/m2m` that carries `course_name`, `chapter_name`, `topic_name`, `subject` (denormalized names for chip rendering).
+- INT + BE shipped a canonical `TaxonomyTagRow` in `@/types/taxonomy` that is ID-only.
 
-**PRD references:** §7.1 (Module: Course / Chapter / Topic Taxonomy Manager), §10.2 (Acceptance criteria).
+INT has now landed `integration/joined-names-on-tag-row` (adds optional `course_name`/`chapter_name?`/`topic_name?`/`subject?` to `TaxonomyTagRow`). BE has landed `backend/joined-names-on-tag-row` (populates those fields on every `/api/questions` response). **Your job is to rebase, resolve the conflict, drop the mock TaxonomyTag type definition, and migrate all callsites to the canonical type.**
 
-**Branch:** `frontend/taxonomy-manager-ui`
+**Branch:** `frontend/multitax-blueprint-paper` (existing — don't create a new one; rebase the existing branch).
 
-**Acceptance criteria:**
-- [ ] Route `app/(dashboard)/taxonomy/page.tsx` — Taxonomy Home: card grid of all Courses, each card shows name, grade badge, stream badge, chapter count. Empty state: "No courses yet — add your first one."
-- [ ] Route `app/(dashboard)/taxonomy/[courseId]/page.tsx` — Course Detail: list of Chapters with subject badge and topic count per chapter. Back link to Taxonomy Home.
-- [ ] Route `app/(dashboard)/taxonomy/[courseId]/[chapterId]/page.tsx` — Chapter Detail: list of Topics. Drag-to-reorder UI (use `@dnd-kit/sortable` or `react-sortablejs` — your call, but document in commit). Reorder is local state only for this PR — no API call yet.
-- [ ] Add/Edit modals for Course, Chapter, Topic — inline, no page navigation. Use shadcn `Dialog`. Forms use `react-hook-form`. Validation message per field.
-- [ ] All data is **mock** for this PR — define a `lib/ui/mocks/taxonomy.ts` with realistic seed data (3 courses across PCM/PCB/JEE, 2–3 chapters each, 2–3 topics each). Type the mocks against the canonical domain types (`import type { Course, Chapter, Topic } from '@/types/domain'`). If `types/domain.ts` doesn't exist yet because integration's PR hasn't merged, define a minimal local stub `types/domain.local.ts` and add a `// TODO: replace with import from types/domain.ts` — the swap should be a one-line change.
-- [ ] Add a "Taxonomy" link in the existing dashboard sidebar.
-- [ ] No API calls in this PR. No fetch helpers yet. The wiring to real backend endpoints is a follow-up brief once both this and `backend/taxonomy-schema-and-api` merge.
-- [ ] Type-check passes. Lint passes. The dev server (`npm run dev`) loads each route without console errors.
+### Workflow at a glance
 
-**Workflow:**
-1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, `docs/PRD.md` (§7.1, §10.2), `docs/AGENTS.md`.
-2. `git checkout main && git pull && git checkout -b frontend/taxonomy-manager-ui`
-3. Implement. Run `npm run dev` and click through every route + modal at least once. Fix any console errors.
-4. Commit with `[FE]` prefix (e.g. `[FE] Add Taxonomy Home page with course grid (PRD §7.1)`, `[FE] Add Course Detail + Chapter Detail pages`, `[FE] Add Course/Chapter/Topic modals`). **No `Co-Authored-By: Claude` footer. No robot emoji line.**
-5. Push. Note: `gh` CLI not installed — record the push output URL in status.
-6. Append entry to `.agents/status-frontend.md` with branch name, files added, push URL, and screenshots if you take any.
-7. Run `~/report.sh frontend "<short summary>"` to nudge orchestrator.
-8. **Stop.**
+1. `git fetch origin && git checkout frontend/multitax-blueprint-paper && git pull`
+2. `git rebase origin/main` — expect a conflict in `lib/ui/api.ts`. Resolve by taking main's side (the canonical interface) **and** dropping the legacy `course`/`chapter`/`topic` joined fields on `Question` (BE no longer returns them).
+3. Cascade-fix the consumer files (listed below).
+4. `npx tsc --noEmit` clean.
+5. `npx next build` (optional but recommended) to catch any runtime-only issues.
+6. Force-push the rebased branch: `git push --force-with-lease`.
+7. Append status entry; stop.
+
+### File-by-file changes
+
+#### `lib/ui/api.ts`
+
+- Take main's side for both conflict hunks.
+- Final shape of the import:
+  ```ts
+  import type { TaxonomyTagRow } from '@/types/taxonomy'
+  ```
+- Final shape of `Question`:
+  ```ts
+  export interface Question {
+    id: string
+    subject: SubjectValue
+    ...
+    taxonomies: TaxonomyTagRow[]
+    // No more course/chapter/topic joined fields.
+  }
+  ```
+
+#### `lib/ui/mocks/m2m.ts`
+
+- Delete the local `export type TaxonomyTag = { course_id; course_name; ... }` definition.
+- Re-export from canonical:
+  ```ts
+  export type { TaxonomyTag, TaxonomyTagRow } from '@/types/taxonomy'
+  ```
+- `formatTagLabel(tag)` — change parameter type to `TaxonomyTagRow`. Read `tag.course_name`, `tag.chapter_name`, `tag.topic_name` (all now live on the canonical row when populated by BE). Fall back to the IDs (formatted as short strings) when names are missing — this keeps the function safe for locally-constructed rows that haven't round-tripped through the API yet.
+- `deriveQuestionTags(q)` — this used to fabricate a `TaxonomyTag` from the legacy `Question.course/chapter/topic` joined fields. Those are GONE on `Question`. **Delete `deriveQuestionTags` and all its callsites** — consumers should read `q.taxonomies` directly. If a callsite needs a "first tag" fallback for legacy untagged questions, use `q.taxonomies[0]` and gate the render with `q.taxonomies.length > 0`.
+- `MOCK_M2M_TAGS_BY_QUESTION` — update each mock row to be the canonical shape: `{ id, course_id, chapter_id?, topic_id?, exam_type, created_at, course_name, chapter_name?, topic_name?, subject? }`. Generate plausible `id`/`created_at` for the mocks (e.g. `crypto.randomUUID()` and `new Date().toISOString()` evaluated once at module load, or hard-coded fixtures).
+- `LegacyTaggedQuestion` type can be deleted (its only consumer was `deriveQuestionTags`).
+
+#### `components/questions/taxonomy-tag-picker.tsx`
+
+- The component holds picker state. Internal `value: TaxonomyTag[]` from `@/types/taxonomy` should remain the input/output type (no names) — the picker BUILDS tags, doesn't render labels for tags-in-flight. For chip labels, take a parallel `taxonomyOptions: TaxonomyTagRow[]` prop that has names, or do a lookup against the in-context course/chapter/topic state that the parent already has.
+- Cleanest interface change: keep `value: TaxonomyTag[]` (canonical input shape, name-less) and add a `formatLabel?: (tag: TaxonomyTag) => string` callback prop that the parent supplies. Parent has access to its course/chapter/topic state and can format. Default the formatter to a fallback that prints `chapter_id ?? course_id`.
+- This is a real refactor — take care to keep the existing keyboard/blur behavior.
+
+#### `components/questions/question-form.tsx`
+
+- Update the `taxonomies` field state to be `TaxonomyTag[]` (without names — they get added by the server after POST). On form submit, you already POST `taxonomies` to `/api/questions`; the request body is unchanged. On form mount when editing an existing question, you read `q.taxonomies` which is now `TaxonomyTagRow[]` — strip the row's `id`/`created_at`/name fields before seeding the picker's state.
+- The legacy `course_id`/`chapter_id`/`topic_id`/`exam_type` top-level fields you held back as v1-compat should now be REMOVED from the form schema and submit body — BE only accepts `taxonomies` now.
+
+#### `components/questions/bulk-retag-modal.tsx`
+
+- Same picker integration treatment as the form. Internal state `tags: TaxonomyTag[]`.
+
+#### `components/questions/question-card.tsx`
+
+- Currently calls `deriveQuestionTags(q)` to get tags. Replace with `q.taxonomies`. Use `formatTagLabel(tag)` directly (now name-aware).
+
+#### `app/(dashboard)/questions/[id]/page.tsx`
+
+- Same `deriveQuestionTags` → `q.taxonomies` swap. The header chip strip now reads server-provided names.
+- If this page reads `q.exam_type` anywhere, replace with `q.taxonomies[0]?.exam_type ?? '—'` or a de-duped list of all `taxonomies[].exam_type` values.
+
+#### `app/(dashboard)/questions/[id]/edit/page.tsx`
+
+- Drops `import type { TaxonomyTag } from '@/lib/ui/mocks/m2m'` — switch to `@/types/taxonomy`.
+- The `seedTag` derivation that reads `q.course_id` etc. won't compile (`Question` no longer has these fields). Replace with `const seedTags = q.taxonomies` (already an array; pass directly to the form).
+
+#### `app/(dashboard)/questions/page.tsx`
+
+- Filters and grouping currently read `q.course?.id`/`q.chapter?.id`/`q.topic?.id`. These joined fields are gone. Switch to reading the **first** taxonomy tag for backward-compatible grouping (or, if you want to honor multi-tagging, group by every `(q, tag)` cross-product — note this in the status entry).
+- Filter sidebar still posts `course_id`/`chapter_id`/`topic_id`/`exam_type` as query params; that contract is unchanged.
+
+#### `app/(dashboard)/tests/new/page.tsx`
+
+- Imports `GenerateTestPayload` from `@/lib/ui/mocks/m2m` — this stays (mock module re-exports it). No change unless typecheck flags it.
+
+### Validation
+
+- [ ] `npx tsc --noEmit` exit 0.
+- [ ] Smoke test by clicking through: question bank list → question detail → edit → bulk retag → test creator blueprint mode. (You can do this in dev — `npm run dev` — if you want, but typecheck-clean is the binding bar.)
+
+### Push
+
+- The branch is shared with origin (already pushed). After rebase you'll need a force push:
+  ```
+  git push --force-with-lease origin frontend/multitax-blueprint-paper
+  ```
+  Use `--force-with-lease`, NOT `--force` (so you don't clobber someone else's commits).
+
+### Status + report
+
+- Append to `.agents/status-frontend.md`: rebase note, files changed, commit list, force-push confirmation, PR URL (same one — `https://github.com/varenyameducation/VarenyamEducation/pull/<N>` if you know the number, otherwise the `pull/new/` URL the previous push printed).
+- Run `~/report.sh frontend "<one-line summary>"`.
+- **Stop.**
+
+### Hard rules
+
+- Single PR. The existing FE PR gets force-pushed; do not open a new one.
+- Do not touch `types/taxonomy.ts` (INT's). Do not touch `app/api/**` (BE's).
+- Do not run `--force` without `--with-lease`.
+- No Claude attribution in commits.
+- If the typecheck reveals an additional FE file that reads the removed `q.course_id`/`q.exam_type` etc. fields and it is not in the list above, FIX it in the same PR — do not leave breakage. Note any genuinely-out-of-FE-scope files in the status entry (none expected — BE has cleaned its own routes already).
