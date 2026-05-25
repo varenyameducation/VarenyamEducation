@@ -14,6 +14,28 @@ git config user.email   # must be snehachoukseyobc@gmail.com
 
 **Branch:** `backend/m2m-taxonomy-and-blueprint`
 
+### ⚠️ Pre-existing work — DO NOT redo
+
+The branch `backend/m2m-taxonomy-and-blueprint` **already exists** and has **1 commit** authored by Sneha: `[BE] M2M question taxonomy schema + create-only migration` (SHA `3c5692d`). That commit was produced when the orchestrator pane was mis-prompted as backend earlier in the session and ran the schema/migration portion of this brief before the user corrected the routing.
+
+**What's already done (do NOT redo):**
+- `prisma/schema.prisma` — `Question.course_id/chapter_id/topic_id/exam_type` columns dropped; `QuestionTaxonomy` junction model added with the exact fields + indexes + `@@unique` from this brief; inverse relations added on `Course`/`Chapter`/`Topic`/`Question`; `test_questions.question_id` now `onDelete: Cascade`.
+- `prisma/migrations/20260525170712_m2m_question_taxonomy/migration.sql` — created via `prisma migrate dev --create-only` (NOT applied to DB; orchestrator will apply).
+
+**Your starting move:**
+```bash
+git fetch origin
+git checkout backend/m2m-taxonomy-and-blueprint
+git pull
+git config user.email   # confirm snehachoukseyobc@gmail.com
+npx prisma generate     # so the new QuestionTaxonomy model is available in @prisma/client
+```
+Verify `git log --oneline main..HEAD` shows exactly `[BE] M2M question taxonomy schema + create-only migration`. If it shows nothing, the branch wasn't fetched — re-run `git fetch && git checkout backend/m2m-taxonomy-and-blueprint`.
+
+**Then skip the "Schema changes" section below and jump straight to "API changes — Question".** Schema is already shipped on this branch. If you discover a bug in the pre-existing schema/migration, fix it in a **new follow-up commit** on the same branch (e.g. `[BE] Fix QuestionTaxonomy index`); never rewrite history.
+
+---
+
 **The DB is currently empty** (orchestrator cleared all questions / tests / test_questions on 2026-05-25). You may write a destructive migration without data-preservation concerns. Drop the old singular FK columns from `Question` in the same migration.
 
 ### Schema changes (Prisma + migration)
