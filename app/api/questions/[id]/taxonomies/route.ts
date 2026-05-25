@@ -4,7 +4,12 @@ import { prisma } from '@/lib/db/prisma'
 import { err, ok } from '@/lib/api/response'
 import { logAudit } from '@/lib/auth/audit'
 import { isAuthFailure, isParseFailure, parseJsonBody, requireAuth } from '@/lib/api/taxonomy'
-import { getClientIp, taxonomyTagSchema } from '@/lib/api/questions'
+import {
+  flattenTaxonomyRow,
+  getClientIp,
+  taxonomyRowSelect,
+  taxonomyTagSchema,
+} from '@/lib/api/questions'
 
 const idSchema = z.string().uuid()
 
@@ -13,14 +18,6 @@ type RouteContext = { params: { id: string } }
 const bodySchema = z.object({
   taxonomies: z.array(taxonomyTagSchema).min(1).max(50),
 })
-
-const taxonomySelect = {
-  id: true,
-  course_id: true,
-  chapter_id: true,
-  topic_id: true,
-  exam_type: true,
-} as const
 
 export async function POST(request: NextRequest, { params }: RouteContext) {
   const auth = await requireAuth()
@@ -65,7 +62,7 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
 
   const rows = await prisma.questionTaxonomy.findMany({
     where: { question_id: params.id },
-    select: taxonomySelect,
+    select: taxonomyRowSelect,
   })
 
   await logAudit({
@@ -81,5 +78,5 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
     ip_address: getClientIp(request),
   })
 
-  return ok({ taxonomies: rows })
+  return ok({ taxonomies: rows.map(flattenTaxonomyRow) })
 }

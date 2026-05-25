@@ -169,3 +169,75 @@ export function getClientIp(request: Request): string | null {
     null
   )
 }
+
+// ─── Taxonomy row shape on /api/questions responses ─────────────────────────
+// Prisma `select` shape used everywhere we return question_taxonomies. Keeps
+// the include pulling Course/Chapter/Topic names so the FE has chip labels
+// without an extra round-trip — see types/taxonomy.ts (TaxonomyTagRow) for
+// the wire-format interface this maps to.
+
+export const taxonomyRowSelect = {
+  id: true,
+  course_id: true,
+  chapter_id: true,
+  topic_id: true,
+  exam_type: true,
+  created_at: true,
+  course: { select: { id: true, name: true } },
+  chapter: { select: { id: true, name: true, subject: true } },
+  topic: { select: { id: true, name: true } },
+} as const
+
+export type QuestionTaxonomyRowWithNames = {
+  id: string
+  course_id: string
+  chapter_id: string | null
+  topic_id: string | null
+  exam_type: string
+  created_at: Date
+  course: { id: string; name: string } | null
+  chapter: { id: string; name: string; subject: string } | null
+  topic: { id: string; name: string } | null
+}
+
+export type FlattenedTaxonomyRow = {
+  id: string
+  course_id: string
+  chapter_id: string | null
+  topic_id: string | null
+  exam_type: string
+  created_at: Date
+  course_name?: string
+  chapter_name: string | null
+  topic_name: string | null
+  subject?: 'Physics' | 'Chemistry' | 'Maths' | 'Biology'
+}
+
+// Flatten the nested Course/Chapter/Topic includes into the row so the wire
+// shape matches the extended `TaxonomyTagRow` in `types/taxonomy.ts`.
+export function flattenTaxonomyRow(t: QuestionTaxonomyRowWithNames): FlattenedTaxonomyRow {
+  return {
+    id: t.id,
+    course_id: t.course_id,
+    chapter_id: t.chapter_id,
+    topic_id: t.topic_id,
+    exam_type: t.exam_type,
+    created_at: t.created_at,
+    course_name: t.course?.name,
+    chapter_name: t.chapter?.name ?? null,
+    topic_name: t.topic?.name ?? null,
+    subject: t.chapter?.subject as
+      | 'Physics'
+      | 'Chemistry'
+      | 'Maths'
+      | 'Biology'
+      | undefined,
+  }
+}
+
+export function withTaxonomies<
+  T extends { question_taxonomies: QuestionTaxonomyRowWithNames[] },
+>(question: T) {
+  const { question_taxonomies, ...rest } = question
+  return { ...rest, taxonomies: question_taxonomies.map(flattenTaxonomyRow) }
+}

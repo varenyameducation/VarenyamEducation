@@ -5,32 +5,17 @@ import { prisma } from '@/lib/db/prisma'
 import { err, ok } from '@/lib/api/response'
 import { logAudit } from '@/lib/auth/audit'
 import { isAuthFailure, isParseFailure, parseJsonBody, requireAuth } from '@/lib/api/taxonomy'
-import { getClientIp, updateQuestionSchema, type TaxonomyTag } from '@/lib/api/questions'
+import {
+  getClientIp,
+  taxonomyRowSelect,
+  updateQuestionSchema,
+  withTaxonomies,
+  type TaxonomyTag,
+} from '@/lib/api/questions'
 
 const idSchema = z.string().uuid()
 
 type RouteContext = { params: { id: string } }
-
-type TaxonomyRow = {
-  id: string
-  course_id: string
-  chapter_id: string | null
-  topic_id: string | null
-  exam_type: string
-}
-
-const taxonomySelect = {
-  id: true,
-  course_id: true,
-  chapter_id: true,
-  topic_id: true,
-  exam_type: true,
-} as const
-
-function withTaxonomies<T extends { question_taxonomies: TaxonomyRow[] }>(question: T) {
-  const { question_taxonomies, ...rest } = question
-  return { ...rest, taxonomies: question_taxonomies }
-}
 
 // Treat two tags as the same row when course/chapter/topic/exam_type all match.
 function tagKey(t: { course_id: string; chapter_id: string | null; topic_id: string | null; exam_type: string }) {
@@ -47,7 +32,7 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
 
   const question = await prisma.question.findFirst({
     where: { id: params.id, deleted_at: null },
-    include: { question_taxonomies: { select: taxonomySelect } },
+    include: { question_taxonomies: { select: taxonomyRowSelect } },
   })
   if (!question) {
     return err(404, { code: 'QUESTION_NOT_FOUND', message: 'Question not found' })
@@ -65,7 +50,7 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
 
   const existing = await prisma.question.findFirst({
     where: { id: params.id, deleted_at: null },
-    include: { question_taxonomies: { select: taxonomySelect } },
+    include: { question_taxonomies: { select: taxonomyRowSelect } },
   })
   if (!existing) {
     return err(404, { code: 'QUESTION_NOT_FOUND', message: 'Question not found' })
@@ -158,7 +143,7 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
 
     const updated = await tx.question.findUnique({
       where: { id: params.id },
-      include: { question_taxonomies: { select: taxonomySelect } },
+      include: { question_taxonomies: { select: taxonomyRowSelect } },
     })
     return updated!
   })
