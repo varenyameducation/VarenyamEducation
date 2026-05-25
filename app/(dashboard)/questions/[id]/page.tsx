@@ -3,35 +3,14 @@
 import * as React from 'react'
 import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
-import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import { AlertCircle } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ClientDate } from '@/components/ui/client-date'
 import { Separator } from '@/components/ui/separator'
+import { RenderedBody } from '@/lib/ui/render-body'
 import { apiGet, type Question } from '@/lib/ui/api'
-
-const LATEX_TOKEN = /\\[a-zA-Z]+|[\$\^_{}]/
-
-function renderBlock(body: string): string {
-  if (!LATEX_TOKEN.test(body)) {
-    return body
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-  }
-  try {
-    return katex.renderToString(body, {
-      throwOnError: false,
-      displayMode: true,
-      output: 'html',
-      strict: 'ignore',
-    })
-  } catch {
-    return body
-  }
-}
 
 export default function QuestionDetailPage({ params }: { params: { id: string } }) {
   const { data, isLoading } = useQuery({
@@ -90,10 +69,7 @@ export default function QuestionDetailPage({ params }: { params: { id: string } 
       </div>
 
       <article className="space-y-4 rounded-md border bg-card p-6">
-        <div
-          className="prose prose-sm max-w-none"
-          dangerouslySetInnerHTML={{ __html: renderBlock(q.question_body) }}
-        />
+        <RenderedBody className="prose prose-sm max-w-none" body={q.question_body} />
         <Separator />
         <p className="text-xs text-muted-foreground">
           Marks: +{Number(q.marks_correct)} / −{Number(q.marks_negative)} · Created{' '}
