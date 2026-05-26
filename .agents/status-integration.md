@@ -2,6 +2,23 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-26 02:05 — integration/subject-tier
+- DONE: Subject becomes a proper entity in the 4-tier hierarchy (Course → Subject → Chapter → Topic).
+  - `types/taxonomy.ts` — `TaxonomyTag` gains optional `subject_id?: string | null`. `TaxonomyTagRow` gains optional `subject_id?` + `subject_name?: string | null`. Existing free-text `subject` field on `TaxonomyTagRow` broadened from the four-value union to `string` so post-migration rows carrying custom subject names (e.g. "Computer Science") survive the wire round-trip. New `Subject` interface exported alongside `TaxonomyTag` / `TaxonomyTagRow` (one Course → many Subjects → many Chapters).
+  - `lib/integrations/validation/taxonomy-tag.ts` — renamed the refinement helper to `enforceHierarchy` and added the chain rule: `topic_id ⇒ chapter_id ⇒ subject_id ⇒ course_id`. `course_id` stays required, so the `subject_id ⇒ course_id` link is implicit. Schema is still `.strict()` on the input side — output-only names stay rejected on POST/PATCH.
+  - `lib/integrations/validation/subject.ts` — new file. `subjectCreateSchema` (`course_id` UUID, `name` trimmed 1..80 chars), `subjectUpdateSchema` (`name` only). Both `.strict()`.
+  - `scripts/seed-taxonomy.mjs` — inserts a `Maths` Subject under each CBSE/ICSE Class-8 course before the chapter. Chapter is created with `subject_id` instead of free-text `subject` column. Output prints all four ids (course / subject / chapter / topic) per row.
+- Commit:
+  - `7d572e8` [INT] Subject tier: types, chain refinement, subject Zod, seed update
+- PR: pending — branch pushed, no `gh` CLI here. Open via https://github.com/varenyameducation/VarenyamEducation/pull/new/integration/subject-tier
+- BLOCKED ON: none.
+- Contract change for BE + FE:
+  - **BE (their `backend/subject-tier` branch):** must add `Subject` model + `subject_id` FK on `Chapter` and `QuestionTaxonomy`. The Prisma client on this machine is already regenerated against a subject-bearing Chapter schema — 12 pre-existing `app/api/**` typecheck errors trace to that. They'll clear once BE's branch lands; not caused by this integration PR. `withTaxonomies()` and its row-shaper need to populate `subject_id` + `subject_name` on each `TaxonomyTagRow`, sourcing `subject_name` from `Subject.name` and `subject` (free-text echo) from the same column.
+  - **FE (their `frontend/subject-tier` branch):** chip rendering can now include the Subject segment ("Course / Subject / Chapter / Topic · exam_type"). Forms must collect `subject_id` between Course and Chapter pickers; on POST the chain refinement will reject `chapter_id` without `subject_id`, so the UI should disable Chapter/Topic until Subject is selected.
+  - **POST contract:** input `TaxonomyTag` payloads must NOT include `course_name` / `subject_name` / `chapter_name` / `topic_name` / `subject`. Zod is strict; unknown keys are rejected.
+- `npx tsc --noEmit` clean for every file in integration scope (`types/**`, `lib/integrations/**`, `scripts/**`). All remaining errors are BE files (`app/api/questions/**`, `app/api/taxonomy/chapters/**`, `app/api/tests/[id]/export/{docx,pdf}/route.ts`) — Prisma-client/regen artifacts that BE will resolve on their own branch.
+- Assumption: BE's Prisma schema will name the Subject FK on Chapter as `subject_id` and on QuestionTaxonomy as `subject_id`. If BE chooses different names, the seed script + chain refinement will need a follow-up.
+
 ## 2026-05-26 01:05 — integration/joined-names-on-tag-row
 - DONE: Joined-name fields on `TaxonomyTagRow` + strict input validation.
   - `types/taxonomy.ts` — `TaxonomyTagRow` now exposes optional `course_name`, `chapter_name?: string | null`, `topic_name?: string | null`, and `subject?: 'Physics' | 'Chemistry' | 'Maths' | 'Biology'`. All optional so the FE bulk-retag flow can build Row-shaped objects locally before the server round-trip, and so course-level-only tags (no chapter) can omit the chapter-derived names.
