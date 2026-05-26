@@ -146,6 +146,15 @@ export const EXAM_TYPES: { value: ExamTypeValue; label: string }[] = [
   { value: 'neet', label: 'NEET' },
 ]
 
+// Legacy canonical-four subject list — still used by:
+//   - `TestGenerateInput.subject` (the test-level subject, hardcoded union
+//     in @/types/taxonomy)
+//   - import/filter/blueprint dropdowns that don't have a course context yet
+// Subject as an entity (per-course rows in the Subject table) is loaded
+// dynamically from /api/taxonomy/subjects; this list only exists for the
+// legacy test/import paths.
+export const SUBJECTS: SubjectValue[] = subjectSchema.options
+
 const matrixRowSchema = z.object({
   key: z.string().min(1),
   text: z.string().min(1, 'Required'),

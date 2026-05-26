@@ -14,7 +14,16 @@ import {
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { FormDialog } from './form-dialog'
-import type { TopicUI } from '@/lib/ui/mocks/taxonomy'
+
+// Wire-format echo of a topic row from /api/taxonomy/topics. Inlined here
+// because the previous shared mock module (which carried this type) is
+// being deleted in the live-fetch migration.
+export type TopicUI = {
+  id: string
+  chapter_id: string
+  name: string
+  topic_no: number | null
+}
 
 const topicSchema = z.object({
   name: z.string().min(1, 'Topic name is required').max(120),

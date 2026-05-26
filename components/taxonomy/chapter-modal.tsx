@@ -13,13 +13,10 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import { Select } from '@/components/ui/select'
 import { FormDialog } from './form-dialog'
-import { SUBJECTS, type ChapterUI, type Subject } from '@/lib/ui/mocks/taxonomy'
 
 const chapterSchema = z.object({
-  name: z.string().min(1, 'Chapter name is required').max(120),
-  subject: z.string().min(1, 'Pick a subject'),
+  name: z.string().min(1, 'Chapter name is required').max(200),
   chapter_no: z
     .string()
     .refine((v) => v === '' || /^[1-9]\d{0,2}$/.test(v), {
@@ -31,21 +28,25 @@ type ChapterFormValues = z.infer<typeof chapterSchema>
 
 export type ChapterSubmitValues = {
   name: string
-  subject: Subject
   chapter_no: number | null
+}
+
+export type ChapterInitial = {
+  id?: string
+  name?: string
+  chapter_no?: number | null
 }
 
 export type ChapterModalProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
-  initial?: Partial<ChapterUI>
+  initial?: ChapterInitial
   onSubmit: (values: ChapterSubmitValues) => void
 }
 
-function toFormValues(initial?: Partial<ChapterUI>): ChapterFormValues {
+function toFormValues(initial?: ChapterInitial): ChapterFormValues {
   return {
     name: initial?.name ?? '',
-    subject: initial?.subject ?? 'Physics',
     chapter_no: initial?.chapter_no != null ? String(initial.chapter_no) : '',
   }
 }
@@ -63,7 +64,6 @@ export function ChapterModal({ open, onOpenChange, initial, onSubmit }: ChapterM
   const handleSubmit = form.handleSubmit((values) => {
     onSubmit({
       name: values.name,
-      subject: values.subject as Subject,
       chapter_no: values.chapter_no === '' ? null : parseInt(values.chapter_no, 10),
     })
     onOpenChange(false)
@@ -74,7 +74,7 @@ export function ChapterModal({ open, onOpenChange, initial, onSubmit }: ChapterM
       open={open}
       onOpenChange={onOpenChange}
       title={initial?.id ? 'Edit Chapter' : 'Add Chapter'}
-      description="Chapters belong to a course and group related topics."
+      description="Chapters live under a subject. Topics live under a chapter."
       onSubmit={handleSubmit}
       submitLabel={initial?.id ? 'Save changes' : 'Create chapter'}
     >
@@ -93,46 +93,19 @@ export function ChapterModal({ open, onOpenChange, initial, onSubmit }: ChapterM
           )}
         />
 
-        <div className="grid grid-cols-2 gap-3">
-          <FormField
-            control={form.control}
-            name="subject"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Subject</FormLabel>
-                <FormControl>
-                  <Select {...field}>
-                    {SUBJECTS.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
-                      </option>
-                    ))}
-                  </Select>
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-
-          <FormField
-            control={form.control}
-            name="chapter_no"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Chapter number</FormLabel>
-                <FormControl>
-                  <Input
-                    type="number"
-                    min={1}
-                    placeholder="Optional"
-                    {...field}
-                  />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
-        </div>
+        <FormField
+          control={form.control}
+          name="chapter_no"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel>Chapter number</FormLabel>
+              <FormControl>
+                <Input type="number" min={1} placeholder="Optional" {...field} />
+              </FormControl>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
       </Form>
     </FormDialog>
   )

@@ -16,7 +16,19 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { FormDialog } from './form-dialog'
-import { STREAMS, type CourseUI, type Stream } from '@/lib/ui/mocks/taxonomy'
+// Stream is a small fixed enum local to the course-creation flow. Lives
+// inline here (used to be in the mock module which is being deleted as
+// part of the live-fetch migration).
+export type Stream = 'JEE' | 'NEET' | 'School' | 'Board'
+export const STREAMS: Stream[] = ['JEE', 'NEET', 'School', 'Board']
+
+export type CourseUI = {
+  id: string
+  name: string
+  grade: number
+  stream: Stream | null
+  description: string | null
+}
 
 const courseSchema = z.object({
   name: z.string().min(1, 'Course name is required').max(120),

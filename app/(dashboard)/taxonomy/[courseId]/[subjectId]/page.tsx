@@ -9,7 +9,7 @@ import {
   MoreVertical,
   Pencil,
   Trash2,
-  BookOpen,
+  Layers,
   AlertCircle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -22,10 +22,10 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { TaxonomyBreadcrumb } from '@/components/taxonomy/breadcrumb'
 import {
-  SubjectModal,
-  type SubjectSubmitValues,
-} from '@/components/taxonomy/subject-modal'
-import { apiGet, apiPost, apiPatch, apiDelete } from '@/lib/ui/api'
+  ChapterModal,
+  type ChapterSubmitValues,
+} from '@/components/taxonomy/chapter-modal'
+import { apiGet, apiPost, apiPut, apiDelete } from '@/lib/ui/api'
 import type { Subject } from '@/types/taxonomy'
 import type { Stream } from '@/components/taxonomy/course-modal'
 
@@ -37,8 +37,15 @@ type CourseRow = {
   description: string | null
 }
 
-export default function CourseDetailPage() {
-  const params = useParams<{ courseId: string }>()
+type ChapterRow = {
+  id: string
+  subject_id: string
+  name: string
+  chapter_no: number | null
+}
+
+export default function SubjectDetailPage() {
+  const params = useParams<{ courseId: string; subjectId: string }>()
   const qc = useQueryClient()
 
   const [open, setOpen] = React.useState(false)
@@ -59,23 +66,38 @@ export default function CourseDetailPage() {
     enabled: Boolean(params.courseId),
   })
 
+  const chaptersQuery = useQuery({
+    queryKey: ['taxonomy', 'chapters', 'by-subject', params.subjectId],
+    queryFn: () =>
+      apiGet<{ items: ChapterRow[] }>(
+        `/api/taxonomy/chapters?subject_id=${params.subjectId}`,
+      ),
+    enabled: Boolean(params.subjectId),
+  })
+
   const course = coursesQuery.data?.ok
     ? coursesQuery.data.data.items.find((c) => c.id === params.courseId)
     : undefined
+  const subject = subjectsQuery.data?.ok
+    ? subjectsQuery.data.data.items.find((s) => s.id === params.subjectId)
+    : undefined
 
   if (coursesQuery.isFetched && !course) notFound()
+  if (subjectsQuery.isFetched && !subject) notFound()
 
-  const subjects = subjectsQuery.data?.ok ? subjectsQuery.data.data.items : []
-  const editing = subjects.find((s) => s.id === editingId)
+  const chapters = chaptersQuery.data?.ok ? chaptersQuery.data.data.items : []
+  const editing = chapters.find((c) => c.id === editingId)
 
   const refresh = () =>
-    qc.invalidateQueries({ queryKey: ['taxonomy', 'subjects', params.courseId] })
+    qc.invalidateQueries({
+      queryKey: ['taxonomy', 'chapters', 'by-subject', params.subjectId],
+    })
 
   const createMutation = useMutation({
-    mutationFn: (values: SubjectSubmitValues) =>
-      apiPost<Subject>('/api/taxonomy/subjects', {
-        course_id: params.courseId,
-        name: values.name,
+    mutationFn: (values: ChapterSubmitValues) =>
+      apiPost<ChapterRow>('/api/taxonomy/chapters', {
+        subject_id: params.subjectId,
+        ...values,
       }),
     onSuccess: (result) => {
       if (result.ok) {
@@ -88,8 +110,8 @@ export default function CourseDetailPage() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, values }: { id: string; values: SubjectSubmitValues }) =>
-      apiPatch<Subject>(`/api/taxonomy/subjects/${id}`, { name: values.name }),
+    mutationFn: ({ id, values }: { id: string; values: ChapterSubmitValues }) =>
+      apiPut<ChapterRow>(`/api/taxonomy/chapters/${id}`, values),
     onSuccess: (result) => {
       if (result.ok) {
         setErrorMsg(null)
@@ -101,7 +123,7 @@ export default function CourseDetailPage() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => apiDelete(`/api/taxonomy/subjects/${id}`),
+    mutationFn: (id: string) => apiDelete(`/api/taxonomy/chapters/${id}`),
     onSuccess: (result) => {
       if (result.ok) {
         setErrorMsg(null)
@@ -120,7 +142,7 @@ export default function CourseDetailPage() {
     setEditingId(id)
     setOpen(true)
   }
-  const handleSubmit = (values: SubjectSubmitValues) => {
+  const handleSubmit = (values: ChapterSubmitValues) => {
     if (editingId) {
       updateMutation.mutate({ id: editingId, values })
     } else {
@@ -132,15 +154,15 @@ export default function CourseDetailPage() {
   const handleDelete = (id: string, name: string) => {
     if (
       window.confirm(
-        `Delete subject "${name}"? This soft-deletes the subject and all its chapters and topics.`,
+        `Delete chapter "${name}"? This soft-deletes the chapter and all its topics.`,
       )
     ) {
       deleteMutation.mutate(id)
     }
   }
 
-  if (!course) {
-    return <p className="text-sm text-muted-foreground">Loading course…</p>
+  if (!course || !subject) {
+    return <p className="text-sm text-muted-foreground">Loading subject…</p>
   }
 
   return (
@@ -148,21 +170,21 @@ export default function CourseDetailPage() {
       <TaxonomyBreadcrumb
         items={[
           { label: 'Taxonomy', href: '/taxonomy' },
-          { label: course.name },
+          { label: course.name, href: `/taxonomy/${course.id}` },
+          { label: subject.name },
         ]}
       />
 
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{course.name}</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{subject.name}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <Badge variant="secondary">Class {course.grade}</Badge>
-            {course.stream ? <Badge variant="outline">{course.stream}</Badge> : null}
+            <Badge variant="muted">{course.name}</Badge>
           </div>
         </div>
         <Button onClick={openCreate}>
           <Plus className="mr-2 h-4 w-4" />
-          Add Subject
+          Add Chapter
         </Button>
       </div>
 
@@ -173,37 +195,39 @@ export default function CourseDetailPage() {
         </div>
       )}
 
-      {subjectsQuery.isLoading ? (
-        <p className="text-sm text-muted-foreground">Loading subjects…</p>
-      ) : subjects.length === 0 ? (
-        <EmptySubjects onAdd={openCreate} />
+      {chaptersQuery.isLoading ? (
+        <p className="text-sm text-muted-foreground">Loading chapters…</p>
+      ) : chapters.length === 0 ? (
+        <EmptyChapters onAdd={openCreate} />
       ) : (
         <ul className="divide-y rounded-lg border bg-card">
-          {subjects.map((subject) => (
+          {chapters.map((chapter) => (
             <li
-              key={subject.id}
+              key={chapter.id}
               className="flex items-center gap-4 px-4 py-3 hover:bg-accent/30"
             >
-              <BookOpen className="h-4 w-4 text-muted-foreground" />
+              <span className="inline-flex h-7 min-w-[2rem] items-center justify-center rounded-md border bg-muted px-2 text-xs font-medium tabular-nums text-muted-foreground">
+                {chapter.chapter_no ?? '—'}
+              </span>
               <Link
-                href={`/taxonomy/${course.id}/${subject.id}`}
+                href={`/taxonomy/${course.id}/${subject.id}/${chapter.id}`}
                 className="flex-1 truncate text-sm font-medium hover:underline"
               >
-                {subject.name}
+                {chapter.name}
               </Link>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon" aria-label="Subject actions">
+                  <Button variant="ghost" size="icon" aria-label="Chapter actions">
                     <MoreVertical className="h-4 w-4" />
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem onSelect={() => openEdit(subject.id)}>
+                  <DropdownMenuItem onSelect={() => openEdit(chapter.id)}>
                     <Pencil className="mr-2 h-4 w-4" />
                     Edit
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    onSelect={() => handleDelete(subject.id, subject.name)}
+                    onSelect={() => handleDelete(chapter.id, chapter.name)}
                     className="text-destructive focus:text-destructive"
                   >
                     <Trash2 className="mr-2 h-4 w-4" />
@@ -216,30 +240,34 @@ export default function CourseDetailPage() {
         </ul>
       )}
 
-      <SubjectModal
+      <ChapterModal
         open={open}
         onOpenChange={(v) => {
           setOpen(v)
           if (!v) setEditingId(null)
         }}
-        initial={editing ? { id: editing.id, name: editing.name } : undefined}
+        initial={
+          editing
+            ? { id: editing.id, name: editing.name, chapter_no: editing.chapter_no }
+            : undefined
+        }
         onSubmit={handleSubmit}
       />
     </div>
   )
 }
 
-function EmptySubjects({ onAdd }: { onAdd: () => void }) {
+function EmptyChapters({ onAdd }: { onAdd: () => void }) {
   return (
     <div className="flex flex-col items-center justify-center rounded-lg border border-dashed p-12 text-center">
-      <BookOpen className="mb-3 h-8 w-8 text-muted-foreground" />
-      <h2 className="text-base font-medium">No subjects yet</h2>
+      <Layers className="mb-3 h-8 w-8 text-muted-foreground" />
+      <h2 className="text-base font-medium">No chapters yet</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        Add the first subject for this course.
+        Add the first chapter for this subject.
       </p>
       <Button className="mt-4" onClick={onAdd}>
         <Plus className="mr-2 h-4 w-4" />
-        Add Subject
+        Add Chapter
       </Button>
     </div>
   )
