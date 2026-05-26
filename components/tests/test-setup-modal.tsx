@@ -10,7 +10,7 @@ import {
   type TestSetupValues,
 } from '@/lib/validation/test'
 import { EXAM_TYPES } from '@/lib/validation/question'
-import { SUBJECTS } from '@/lib/ui/mocks/taxonomy'
+import { SUBJECTS } from '@/lib/validation/question'
 import { apiGet } from '@/lib/ui/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'

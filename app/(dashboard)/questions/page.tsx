@@ -23,8 +23,8 @@ import { apiGet, type Paginated, type Question } from '@/lib/ui/api'
 import { cn } from '@/lib/utils'
 
 type CourseNode = { id: string; name: string; grade: number }
-type ChapterNode = { id: string; name: string; course_id: string; subject: string }
-type TopicNode = { id: string; name: string; chapter_id: string }
+type ChapterNode = { id: string; name: string }
+type TopicNode = { id: string; name: string }
 
 // Read the legacy "primary tag" view of a question — the first m2m tag.
 // Used for backward-compatible grouping/filtering; multi-tag cross-product
