@@ -2,6 +2,40 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-26 14:00 — frontend/subject-tier-and-paper (3-track sprint)
+- BASE: branched from `origin/backend/subject-tier` (5 BE commits), then `git merge --no-ff origin/integration/subject-tier` (subject-tier types + chain refinement + seed update). `npx prisma generate` regenerated the FE worktree's client against the new Subject model. Brand logo PNGs (`public/brand/varenyam-logo-full.png`, `varenyam-logo-mark.png`) cherry-picked from `origin/orchestrator/sprint-subject-tier-and-paper`.
+- Commits on branch (`git log origin/main..HEAD`):
+  - `ba3820b Merge integration/subject-tier into FE base`
+  - `c5cec7d [FE] Taxonomy Manager: add Subject route level + CRUD UI`
+  - `85de571 [FE] TaxonomyTagPicker: live-fetch all 4 dropdowns; delete mocks`
+  - `e0a8df0 [FE] Paper redesign: branded header + 2-col MCQ + capped diagrams (DOCX + PDF + PaperTemplate)`
+- Track 1 — Taxonomy Manager: routes restructured to walk 4-tier Course → Subject → Chapter → Topic. `/taxonomy/<courseId>` lists subjects (was chapters); new `/taxonomy/<courseId>/<subjectId>` lists chapters under that subject; `/taxonomy/<courseId>/<subjectId>/<chapterId>` is the topic list (moved one level deeper). Old `/taxonomy/<courseId>/<chapterId>` deleted. New `components/taxonomy/subject-modal.tsx` (free-text name max 80). Chapter modal drops the SUBJECTS enum dropdown — subject_id comes from URL. Course modal inlines Stream type; topic modal inlines TopicUI type (mock module on its way out). Breadcrumbs walk the full chain.
+- Track 2 — TaxonomyTagPicker live-fetch + mock cleanup:
+  - `components/questions/taxonomy-tag-picker.tsx` rewritten: 4-level dependent dropdowns (course → subject → chapter → topic → exam) all fetched live from `/api/taxonomy/*`. Internal name-map cache populated from courses query + add-form fetches + a one-shot bootstrap that fires per-parent fetches for any tags supplied in initial `value` (refs dedupe). `formatLabel` prop dropped — picker is name-aware. TaxonomyTag output now carries `subject_id`.
+  - `lib/ui/mocks/taxonomy.ts` deleted. MOCK_M2M_TAGS_BY_QUESTION + formatTagFromMocks deleted from m2m.ts. `formatTagLabel` rewired to read `subject_name`/`subject` on TaxonomyTagRow for the 4-tier 'Course → Subject → Chapter → Topic · exam' chip label. mockInventoryCounts kept (blueprint-builder degradation path).
+  - `components/tests/question-filter-panel.tsx` rewritten to live-fetch; new Subject dropdown wired to `subject_id`. Legacy 'subject' string chip row kept beside it.
+  - `components/questions/question-filters.tsx` deleted (unused).
+  - SUBJECTS now imported from `lib/validation/question.ts` (`subjectSchema.options`) by `blueprint-builder.tsx`, `test-setup-modal.tsx`, `question-filter-panel.tsx`.
+  - `bulk-retag-modal.tsx` payload now includes `subject_id` per tag.
+  - `[id]/edit/page.tsx` seedTags strip retains `subject_id`.
+- Track 3 — Paper redesign (DOCX + PDF + PaperTemplate):
+  - Brand palette locked: teal `#0E6E84`, red `#D63D2F`, accent yellow `#F2B33D` (logo only). Read from `InstituteBranding.brand_color_hex` with one-line fallback in the templates that overrides both missing values and the legacy `1B3A6B` navy.
+  - Varenyam wordmark embedded everywhere: `public/brand/varenyam-logo-full.png` referenced by the React preview, inlined as base64 data URL by pdf.ts, read via `fs.readFileSync` for ImageRun by docx.ts. Cached per process.
+  - PaperTemplate.tsx (Georgia 11pt body) ships the full reference structure: header with logo on the left + centered name + tagline + brand-red 1px rule; 'Board:' line; uppercase title; 3-col meta grid (Time / Max Marks / Topic, teal labels); Student Name + Roll No. dotted lines; General Instructions in brand-tinted box with teal left border (parses provided text or falls back to a 5-point default); Marking Scheme table with 'Marks Obtained' column; centered teal-filled section banners; 2-column MCQ grid (1fr 1fr CSS Grid); marks chip `[ N ]` right-aligned with brand-red pill border; **diagrams capped at 280×180 px with `object-fit: contain`** (fixes the "diagrams look too big" complaint).
+  - TestPaperDocument.tsx: @page set to US Letter, margins 14mm top / 6mm right / 18mm bottom / 25mm left.
+  - pdf.ts: page format flipped to 'letter'; same margins; footer top-border now brand-teal; inlines the logo as data URL before render.
+  - docx.ts: full rewrite to mirror PaperTemplate. US Letter twip margins, centered logo ImageRun, brand-red border under header, meta line + Board: line, Marking Scheme Table with 5 columns including 'Marks Obtained', section bars (centered teal-filled shading + white bold uppercase), 2×2 MCQ Table (no borders), dotted answer-line paragraphs, marks-chip paragraph in brand-red, brand-teal footer top-border. Inline diagrams capped to 280×180 px.
+- Typecheck: `node node_modules/typescript/bin/tsc --noEmit` in `/mnt/d/varenyam-fe` runs **clean across every FE-scope file** (app/(dashboard)/**, components/**, lib/ui, lib/validation, lib/export, types/). Ran `npm install --prefer-offline` once to backfill `docx` + `puppeteer` packages that weren't present in the FE worktree's `node_modules` (their absence had blocked typecheck on prior rounds; resolved here).
+- Remaining typecheck errors (both **out of FE scope**, both pre-existing on BE's branch — flagged to BE):
+  - `app/api/tests/[id]/export/docx/route.ts:42` — `Unused '@ts-expect-error' directive.` The directive was placed when `@/lib/export/docx` was an unresolved import; now that the module ships, the suppression is unused. Quick fix: BE deletes the `@ts-expect-error` line.
+  - `app/api/tests/[id]/export/pdf/route.ts:40` — same pattern for `@/lib/export/pdf`.
+- PR: **pending force-push** — `git push -u origin frontend/subject-tier-and-paper` from `/mnt/d/varenyam-fe` failed with the same worktree-gitdir credential-manager bug noted in prior rounds (`fatal: could not read Username for 'https://github.com'`). All 4 commits are local and verified clean. Orchestrator: please run `git push -u origin frontend/subject-tier-and-paper:frontend/subject-tier-and-paper` from `/mnt/d/varenyam` (or any non-worktree shell that has the credentials cached), then open the PR with `gh pr create`.
+- BLOCKED ON: orchestrator push + BE clearing the two `@ts-expect-error` directives.
+- NOTES:
+  - Brand color row in `InstituteBranding` still defaults to old `1B3A6B`; templates auto-upgrade to `#0E6E84` for that value. Orchestrator may want to update the DB row separately.
+  - `mockInventoryCounts` is still the only "fixture" left in `lib/ui/mocks/m2m.ts` — it backs blueprint-builder's degradation path when `/api/questions/inventory-counts` is unreachable. Kept intentionally.
+  - Did not touch `types/**`, `app/api/**`, `prisma/**`, `lib/integrations/**`.
+
 ## 2026-05-25 19:30 — frontend/multitax-blueprint-paper (rebased onto main, +1 commit)
 - DONE: Rebased the m2m sprint branch onto `origin/main` (now at 1fbdfa6 = INT joined-names + BE joined-names merged). Resolved the `lib/ui/api.ts` conflict by taking main's side (canonical `Question.taxonomies: TaxonomyTagRow[]`, legacy `course/chapter/topic` joined fields dropped, `ExamTypeValue` import dropped). Then a single fixup commit `4d3977f [FE] Migrate to canonical TaxonomyTagRow from @/types/taxonomy` cascade-fixes every consumer:
   - `lib/ui/mocks/m2m.ts` — local `TaxonomyTag` type deleted; re-export canonical `TaxonomyTag` / `TaxonomyTagRow` / `InventoryCounts` / `BlueprintSection` plus a `GenerateTestPayload` alias for `TestGenerateInput`. `deriveQuestionTags` + `LegacyTaggedQuestion` deleted (callers now read `q.taxonomies` directly). `MOCK_M2M_TAGS_BY_QUESTION` rewritten as `TaxonomyTagRow[]` with hardcoded `id` / `created_at`. `mockInventoryCounts` returns the canonical flat shape. New helper `formatTagFromMocks(tag: TaxonomyTag)` renders id-only chips using the in-memory course/chapter/topic mock tables — used by both the question form and the bulk-retag modal during edit.
