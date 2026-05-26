@@ -118,6 +118,10 @@ export const generateTestSchema = z.object({
       z.object({
         label: z.string().trim().min(1).max(50),
         blueprint: blueprintCountsSchema,
+        // Subject-tier scope: optional subject_id alongside chapter/topic.
+        // When provided, narrows the section's candidate pool to questions
+        // tagged at that Subject (still AND'd with course_id + exam_type).
+        subject_id: z.string().uuid().optional(),
         chapter_ids: z.array(z.string().uuid()).max(200).optional(),
         topic_ids: z.array(z.string().uuid()).max(500).optional(),
         question_type: z.enum(QUESTION_TYPE_VALUES).optional(),
@@ -135,6 +139,7 @@ export const inventoryCountsQuerySchema = z.object({
   course_id: z.string().uuid(),
   exam_type: z.enum(TEST_BLUEPRINT_EXAM_TYPE_VALUES),
   subject: z.enum(TEST_BLUEPRINT_SUBJECT_VALUES),
+  subject_id: z.string().uuid().optional(),
   chapter_ids: z.array(z.string().uuid()).max(200).optional(),
   topic_ids: z.array(z.string().uuid()).max(500).optional(),
   question_type: z.enum(QUESTION_TYPE_VALUES).optional(),

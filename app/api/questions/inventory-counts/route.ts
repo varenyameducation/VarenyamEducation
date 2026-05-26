@@ -25,6 +25,7 @@ export async function GET(request: NextRequest) {
     course_id: url.searchParams.get('course_id') ?? undefined,
     exam_type: url.searchParams.get('exam_type') ?? undefined,
     subject: url.searchParams.get('subject') ?? undefined,
+    subject_id: url.searchParams.get('subject_id') ?? undefined,
     chapter_ids: readArrayParam(url, 'chapter_ids'),
     topic_ids: readArrayParam(url, 'topic_ids'),
     question_type: url.searchParams.get('question_type') ?? undefined,
@@ -42,6 +43,7 @@ export async function GET(request: NextRequest) {
   const taxonomyAnd: Prisma.QuestionTaxonomyWhereInput = {
     course_id: q.course_id,
     exam_type: q.exam_type,
+    ...(q.subject_id ? { subject_id: q.subject_id } : {}),
     ...(q.chapter_ids && q.chapter_ids.length > 0
       ? { chapter_id: { in: q.chapter_ids } }
       : {}),

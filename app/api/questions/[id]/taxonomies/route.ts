@@ -53,6 +53,7 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
     data: taxonomies.map((t) => ({
       question_id: params.id,
       course_id: t.course_id,
+      subject_id: t.subject_id,
       chapter_id: t.chapter_id,
       topic_id: t.topic_id,
       exam_type: t.exam_type,

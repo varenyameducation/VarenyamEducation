@@ -17,9 +17,24 @@ const idSchema = z.string().uuid()
 
 type RouteContext = { params: { id: string } }
 
-// Treat two tags as the same row when course/chapter/topic/exam_type all match.
-function tagKey(t: { course_id: string; chapter_id: string | null; topic_id: string | null; exam_type: string }) {
-  return [t.course_id, t.chapter_id ?? '_', t.topic_id ?? '_', t.exam_type].join('|')
+// Treat two tags as the same row when course/subject/chapter/topic/exam_type
+// all match. The Subject-tier migration added subject_id to the unique index;
+// the diff key must include it or PATCH will delete-and-reinsert otherwise-
+// identical rows that differ only on subject_id.
+function tagKey(t: {
+  course_id: string
+  subject_id: string | null
+  chapter_id: string | null
+  topic_id: string | null
+  exam_type: string
+}) {
+  return [
+    t.course_id,
+    t.subject_id ?? '_',
+    t.chapter_id ?? '_',
+    t.topic_id ?? '_',
+    t.exam_type,
+  ].join('|')
 }
 
 export async function GET(_request: NextRequest, { params }: RouteContext) {
@@ -132,6 +147,7 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
           data: toAdd.map((t) => ({
             question_id: params.id,
             course_id: t.course_id,
+            subject_id: t.subject_id,
             chapter_id: t.chapter_id,
             topic_id: t.topic_id,
             exam_type: t.exam_type,

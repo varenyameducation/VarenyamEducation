@@ -144,19 +144,25 @@ async function handleDocumentImport(
   }
   const defaults = defaultsParsed.data
 
-  // Verify the taxonomy nodes exist and chain correctly.
+  // Verify the taxonomy nodes exist and chain correctly. Chapter no longer
+  // has a `course_id` column — it points at Subject which in turn points at
+  // Course, so the course-membership check walks one extra hop.
   const [course, chapter, topic] = await Promise.all([
     prisma.course.findFirst({ where: { id: defaults.course_id, deleted_at: null } }),
-    prisma.chapter.findFirst({ where: { id: defaults.chapter_id, deleted_at: null } }),
+    prisma.chapter.findFirst({
+      where: { id: defaults.chapter_id, deleted_at: null },
+      include: { subject: { select: { id: true, course_id: true } } },
+    }),
     prisma.topic.findFirst({ where: { id: defaults.topic_id, deleted_at: null } }),
   ])
   if (!course) return err(400, { code: 'BAD_TAXONOMY', message: 'course_id not found' })
-  if (!chapter || chapter.course_id !== defaults.course_id) {
+  if (!chapter || chapter.subject.course_id !== defaults.course_id) {
     return err(400, { code: 'BAD_TAXONOMY', message: 'chapter does not belong to course' })
   }
   if (!topic || topic.chapter_id !== defaults.chapter_id) {
     return err(400, { code: 'BAD_TAXONOMY', message: 'topic does not belong to chapter' })
   }
+  const importSubjectId = chapter.subject.id
 
   let paragraphs: string[]
   let docxImages: DocxImage[] = []
@@ -305,6 +311,7 @@ async function handleDocumentImport(
             data: {
               question_id: created.id,
               course_id: defaults.course_id,
+              subject_id: importSubjectId,
               chapter_id: defaults.chapter_id,
               topic_id: defaults.topic_id,
               exam_type: defaults.exam_type,
@@ -456,9 +463,17 @@ async function handleXlsxImport(
       where: { deleted_at: null, name: { in: Array.from(courseNames) } },
       select: { id: true, name: true },
     }),
+    // Chapter no longer has course_id directly — pull it via subject so we
+    // can still key the lookup on (course_id, chapter_name) for backward
+    // compat with the existing xlsx schema (no subject_name column).
     prisma.chapter.findMany({
       where: { deleted_at: null, name: { in: Array.from(chapterNames) } },
-      select: { id: true, name: true, course_id: true },
+      select: {
+        id: true,
+        name: true,
+        subject_id: true,
+        subject: { select: { course_id: true } },
+      },
     }),
     prisma.topic.findMany({
       where: { deleted_at: null, name: { in: Array.from(topicNames) } },
@@ -468,7 +483,13 @@ async function handleXlsxImport(
 
   const courseByName = new Map(courses.map((c) => [c.name, c.id]))
   const chapterByCourseAndName = new Map(
-    chapters.map((c) => [`${c.course_id}::${c.name}`, c.id] as const),
+    chapters.map(
+      (c) =>
+        [
+          `${c.subject.course_id}::${c.name}`,
+          { id: c.id, subject_id: c.subject_id },
+        ] as const,
+    ),
   )
   const topicByChapterAndName = new Map(
     topics.map((t) => [`${t.chapter_id}::${t.name}`, t.id] as const),
@@ -481,6 +502,7 @@ async function handleXlsxImport(
     // exactly one tag per row; future iterations can extend to many.
     taxonomy: {
       course_id: string
+      subject_id: string
       chapter_id: string
       topic_id: string
       exam_type: string
@@ -499,14 +521,16 @@ async function handleXlsxImport(
       errors.push({ row: rowNumber, reason: `Taxonomy not found: course "${row.course_name}"` })
       continue
     }
-    const chapterId = chapterByCourseAndName.get(`${courseId}::${row.chapter_name}`)
-    if (!chapterId) {
+    const chapterHit = chapterByCourseAndName.get(`${courseId}::${row.chapter_name}`)
+    if (!chapterHit) {
       errors.push({
         row: rowNumber,
         reason: `Taxonomy not found: chapter "${row.chapter_name}" under course "${row.course_name}"`,
       })
       continue
     }
+    const chapterId = chapterHit.id
+    const subjectId = chapterHit.subject_id
     const topicId = topicByChapterAndName.get(`${chapterId}::${row.topic_name}`)
     if (!topicId) {
       errors.push({
@@ -594,6 +618,7 @@ async function handleXlsxImport(
       data,
       taxonomy: {
         course_id: courseId,
+        subject_id: subjectId,
         chapter_id: chapterId,
         topic_id: topicId,
         exam_type: row.exam_type,

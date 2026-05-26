@@ -21,6 +21,7 @@ export async function GET(request: NextRequest) {
   const url = new URL(request.url)
   const parsed = listQuerySchema.safeParse({
     course_id: url.searchParams.get('course_id') ?? undefined,
+    subject_id: url.searchParams.get('subject_id') ?? undefined,
     chapter_id: url.searchParams.get('chapter_id') ?? undefined,
     topic_id: url.searchParams.get('topic_id') ?? undefined,
     subject: url.searchParams.get('subject') ?? undefined,
@@ -41,10 +42,11 @@ export async function GET(request: NextRequest) {
 
   const { page, limit, search, ...filters } = parsed.data
 
-  // Taxonomy filters (course/chapter/topic/exam_type) are AND-ed together into
-  // a single junction row via question_taxonomies.some({ ...all }).
+  // Taxonomy filters (course/subject/chapter/topic/exam_type) are AND-ed
+  // together into a single junction row via question_taxonomies.some(...).
   const taxonomyAnd: Prisma.QuestionTaxonomyWhereInput = {
     ...(filters.course_id ? { course_id: filters.course_id } : {}),
+    ...(filters.subject_id ? { subject_id: filters.subject_id } : {}),
     ...(filters.chapter_id ? { chapter_id: filters.chapter_id } : {}),
     ...(filters.topic_id ? { topic_id: filters.topic_id } : {}),
     ...(filters.exam_type ? { exam_type: filters.exam_type } : {}),
@@ -130,6 +132,7 @@ export async function POST(request: NextRequest) {
         data: taxonomies.map((t) => ({
           question_id: question.id,
           course_id: t.course_id,
+          subject_id: t.subject_id,
           chapter_id: t.chapter_id,
           topic_id: t.topic_id,
           exam_type: t.exam_type,
