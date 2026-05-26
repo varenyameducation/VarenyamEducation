@@ -24,11 +24,13 @@ CREATE TABLE "subjects" (
 );
 CREATE INDEX "subjects_course_id_idx" ON "subjects"("course_id");
 
--- 2. Backfill: one Subject row per distinct (course_id, subject string) on Chapter
+-- 2. Backfill: one Subject row per distinct (course_id, subject string) on Chapter.
+-- Include soft-deleted chapters too — otherwise their backfill UPDATE below would
+-- leave subject_id NULL and break the NOT NULL constraint at step 3. The Subject
+-- rows generated from soft-deleted chapters are harmless (they just sit unused).
 INSERT INTO "subjects" ("course_id", "name", "created_at", "updated_at")
 SELECT DISTINCT "course_id", "subject", NOW(), NOW()
-FROM "chapters"
-WHERE "deleted_at" IS NULL;
+FROM "chapters";
 
 -- 3. Add subject_id to chapters (nullable first), populate, then enforce NOT NULL
 ALTER TABLE "chapters" ADD COLUMN "subject_id" UUID;
