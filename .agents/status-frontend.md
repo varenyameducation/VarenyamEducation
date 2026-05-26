@@ -2,6 +2,16 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-26 18:30 — frontend/subject-tier-and-paper (re-verify pass)
+- Re-dispatched on the same branch (no code changes this pass). All 4 commits from the 14:00 entry are intact (`c5cec7d`, `85de571`, `e0a8df0`, `684b48d` + merge `ba3820b`); `git log origin/main..HEAD` matches the recorded list. INT (#28) and BE (#29) are now on `main` so the branch's merge of `integration/subject-tier` + its base on `backend/subject-tier` are redundant with main's history — content is identical so a PR against main will merge cleanly (FE commits are pure additions on top of shared INT+BE state).
+- Typecheck (`node node_modules/typescript/bin/tsc --noEmit` in `/mnt/d/varenyam-fe`): still **clean across every FE-scope file**. The only two errors are unchanged and out of FE scope:
+  - `app/api/tests/[id]/export/docx/route.ts:42` — `Unused '@ts-expect-error' directive.`
+  - `app/api/tests/[id]/export/pdf/route.ts:40` — same.
+  Both need BE to drop the suppression line now that `lib/export/{docx,pdf}.ts` resolve.
+- Push retry: `git push -u origin frontend/subject-tier-and-paper` from `/mnt/d/varenyam-fe` reproduces the worktree-gitdir credential-manager crash (`fatal: not a git repository: /mnt/d/varenyam/.git/worktrees/varenyam-fe` → `could not read Username for 'https://github.com'`). Same failure mode flagged in prior rounds.
+- BLOCKED ON: orchestrator to run `git push -u origin frontend/subject-tier-and-paper:frontend/subject-tier-and-paper` from `/mnt/d/varenyam` and open the PR; BE to clear the two `@ts-expect-error` lines.
+- NOTES: no new code commits this pass — work product is the same artifact as 14:00. This entry exists so orchestrator sees the re-verification result without re-reading the longer entry below.
+
 ## 2026-05-26 14:00 — frontend/subject-tier-and-paper (3-track sprint)
 - BASE: branched from `origin/backend/subject-tier` (5 BE commits), then `git merge --no-ff origin/integration/subject-tier` (subject-tier types + chain refinement + seed update). `npx prisma generate` regenerated the FE worktree's client against the new Subject model. Brand logo PNGs (`public/brand/varenyam-logo-full.png`, `varenyam-logo-mark.png`) cherry-picked from `origin/orchestrator/sprint-subject-tier-and-paper`.
 - Commits on branch (`git log origin/main..HEAD`):
