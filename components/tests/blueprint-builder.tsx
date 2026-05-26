@@ -18,7 +18,7 @@ import {
   type SubjectValue,
 } from '@/lib/validation/question'
 import type { QuestionType as BlueprintQuestionType } from '@/types/taxonomy'
-import { SUBJECTS } from '@/lib/ui/mocks/taxonomy'
+import { SUBJECTS } from '@/lib/validation/question'
 import { apiGet } from '@/lib/ui/api'
 import {
   mockInventoryCounts,

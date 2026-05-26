@@ -23,6 +23,7 @@ function toFormInitialValues(q: Question): Partial<QuestionFormValues> {
   // the server on the next read).
   const seedTags: TaxonomyTag[] = (q.taxonomies ?? []).map((row) => ({
     course_id: row.course_id,
+    subject_id: row.subject_id ?? null,
     chapter_id: row.chapter_id ?? null,
     topic_id: row.topic_id ?? null,
     exam_type: row.exam_type,

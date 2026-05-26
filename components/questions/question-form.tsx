@@ -16,7 +16,6 @@ import {
   type QuestionFormValues,
 } from '@/lib/validation/question'
 import type { TaxonomyTag } from '@/types/taxonomy'
-import { formatTagFromMocks } from '@/lib/ui/mocks/m2m'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -119,7 +118,6 @@ export function QuestionForm({
                 id="taxonomies"
                 value={(field.value ?? []) as TaxonomyTag[]}
                 onChange={field.onChange}
-                formatLabel={formatTagFromMocks}
                 error={fieldState.error?.message}
               />
             )}

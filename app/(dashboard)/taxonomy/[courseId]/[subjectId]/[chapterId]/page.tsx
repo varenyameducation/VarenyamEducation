@@ -40,7 +40,8 @@ import {
 import { TaxonomyBreadcrumb } from '@/components/taxonomy/breadcrumb'
 import { TopicModal, type TopicSubmitValues } from '@/components/taxonomy/topic-modal'
 import { apiGet, apiPost, apiPut, apiDelete } from '@/lib/ui/api'
-import type { Stream, Subject } from '@/lib/ui/mocks/taxonomy'
+import type { Subject } from '@/types/taxonomy'
+import type { Stream } from '@/components/taxonomy/course-modal'
 
 type CourseRow = {
   id: string
@@ -52,9 +53,8 @@ type CourseRow = {
 
 type ChapterRow = {
   id: string
-  course_id: string
+  subject_id: string
   name: string
-  subject: Subject
   chapter_no: number | null
 }
 
@@ -66,7 +66,11 @@ type TopicRow = {
 }
 
 export default function ChapterDetailPage() {
-  const params = useParams<{ courseId: string; chapterId: string }>()
+  const params = useParams<{
+    courseId: string
+    subjectId: string
+    chapterId: string
+  }>()
   const qc = useQueryClient()
 
   const [open, setOpen] = React.useState(false)
@@ -78,13 +82,22 @@ export default function ChapterDetailPage() {
     queryFn: () => apiGet<{ items: CourseRow[] }>('/api/taxonomy/courses'),
   })
 
-  const chaptersQuery = useQuery({
-    queryKey: ['taxonomy', 'chapters', params.courseId],
+  const subjectsQuery = useQuery({
+    queryKey: ['taxonomy', 'subjects', params.courseId],
     queryFn: () =>
-      apiGet<{ items: ChapterRow[] }>(
-        `/api/taxonomy/chapters?course_id=${params.courseId}`,
+      apiGet<{ items: Subject[] }>(
+        `/api/taxonomy/subjects?course_id=${params.courseId}`,
       ),
     enabled: Boolean(params.courseId),
+  })
+
+  const chaptersQuery = useQuery({
+    queryKey: ['taxonomy', 'chapters', 'by-subject', params.subjectId],
+    queryFn: () =>
+      apiGet<{ items: ChapterRow[] }>(
+        `/api/taxonomy/chapters?subject_id=${params.subjectId}`,
+      ),
+    enabled: Boolean(params.subjectId),
   })
 
   const topicsQuery = useQuery({
@@ -99,11 +112,15 @@ export default function ChapterDetailPage() {
   const course = coursesQuery.data?.ok
     ? coursesQuery.data.data.items.find((c) => c.id === params.courseId)
     : undefined
+  const subject = subjectsQuery.data?.ok
+    ? subjectsQuery.data.data.items.find((s) => s.id === params.subjectId)
+    : undefined
   const chapter = chaptersQuery.data?.ok
     ? chaptersQuery.data.data.items.find((c) => c.id === params.chapterId)
     : undefined
 
   if (coursesQuery.isFetched && !course) notFound()
+  if (subjectsQuery.isFetched && !subject) notFound()
   if (chaptersQuery.isFetched && !chapter) notFound()
 
   const remoteTopics = topicsQuery.data?.ok ? topicsQuery.data.data.items : []
@@ -120,6 +137,9 @@ export default function ChapterDetailPage() {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   )
 
+  const refresh = () =>
+    qc.invalidateQueries({ queryKey: ['taxonomy', 'topics', params.chapterId] })
+
   const createMutation = useMutation({
     mutationFn: (values: TopicSubmitValues) =>
       apiPost<TopicRow>('/api/taxonomy/topics', {
@@ -129,7 +149,7 @@ export default function ChapterDetailPage() {
     onSuccess: (result) => {
       if (result.ok) {
         setErrorMsg(null)
-        qc.invalidateQueries({ queryKey: ['taxonomy', 'topics', params.chapterId] })
+        refresh()
       } else {
         setErrorMsg(result.error.message)
       }
@@ -142,7 +162,7 @@ export default function ChapterDetailPage() {
     onSuccess: (result) => {
       if (result.ok) {
         setErrorMsg(null)
-        qc.invalidateQueries({ queryKey: ['taxonomy', 'topics', params.chapterId] })
+        refresh()
       } else {
         setErrorMsg(result.error.message)
       }
@@ -154,7 +174,7 @@ export default function ChapterDetailPage() {
     onSuccess: (result) => {
       if (result.ok) {
         setErrorMsg(null)
-        qc.invalidateQueries({ queryKey: ['taxonomy', 'topics', params.chapterId] })
+        refresh()
       } else {
         setErrorMsg(result.error.message)
       }
@@ -181,12 +201,10 @@ export default function ChapterDetailPage() {
     setEditingId(null)
     setOpen(true)
   }
-
   const openEdit = (id: string) => {
     setEditingId(id)
     setOpen(true)
   }
-
   const handleSubmit = (values: TopicSubmitValues) => {
     if (editingId) {
       updateMutation.mutate({ id: editingId, values })
@@ -200,7 +218,7 @@ export default function ChapterDetailPage() {
     setOpen(false)
   }
 
-  if (!course || !chapter) {
+  if (!course || !subject || !chapter) {
     return <p className="text-sm text-muted-foreground">Loading chapter…</p>
   }
 
@@ -210,6 +228,7 @@ export default function ChapterDetailPage() {
         items={[
           { label: 'Taxonomy', href: '/taxonomy' },
           { label: course.name, href: `/taxonomy/${course.id}` },
+          { label: subject.name, href: `/taxonomy/${course.id}/${subject.id}` },
           { label: chapter.name },
         ]}
       />
@@ -218,7 +237,7 @@ export default function ChapterDetailPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{chapter.name}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <Badge variant="muted">{chapter.subject}</Badge>
+            <Badge variant="muted">{subject.name}</Badge>
             {chapter.chapter_no != null ? (
               <Badge variant="outline">Chapter {chapter.chapter_no}</Badge>
             ) : null}

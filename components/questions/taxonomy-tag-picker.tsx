@@ -1,27 +1,32 @@
 'use client'
 
 import * as React from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Plus, X } from 'lucide-react'
-import {
-  MOCK_COURSES,
-  MOCK_CHAPTERS,
-  MOCK_TOPICS,
-} from '@/lib/ui/mocks/taxonomy'
 import { EXAM_TYPES, type ExamTypeValue } from '@/lib/validation/question'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { Select } from '@/components/ui/select'
-import type { TaxonomyTag } from '@/types/taxonomy'
+import { apiGet } from '@/lib/ui/api'
+import type { Subject, TaxonomyTag } from '@/types/taxonomy'
 import { cn } from '@/lib/utils'
+
+type CourseRow = { id: string; name: string; grade?: number }
+type ChapterRow = {
+  id: string
+  subject_id: string
+  name: string
+  chapter_no: number | null
+}
+type TopicRow = { id: string; chapter_id: string; name: string; topic_no: number | null }
+
+// Shape of a value-tag with parent names attached. Used for chip rendering;
+// derived from the live API responses (no mocks).
+type NameMap = Map<string, string>
 
 export interface TaxonomyTagPickerProps {
   value: TaxonomyTag[]
   onChange: (next: TaxonomyTag[]) => void
-  // Chip label formatter. Canonical TaxonomyTag is id-only, so the parent
-  // (which has the course/chapter/topic name maps in scope) is responsible
-  // for printing readable chip text. The default just shows the most
-  // specific id available, which keeps untyped callsites useful.
-  formatLabel?: (tag: TaxonomyTag) => string
   // Optional surface-level error rendered under the chip row (e.g. "at
   // least one tag required").
   error?: string | null
@@ -29,23 +34,110 @@ export interface TaxonomyTagPickerProps {
   id?: string
 }
 
-const defaultFormatLabel = (tag: TaxonomyTag): string => {
-  const idLabel = tag.topic_id ?? tag.chapter_id ?? tag.course_id
-  return `${idLabel} · ${tag.exam_type}`
-}
-
-// Controlled multi-tag picker for question taxonomy. Parent holds the
-// `taxonomies: TaxonomyTag[]` form-state slice; this component renders
-// the chip row + an inline add-form. Course + exam type are required
-// per tag, chapter + topic are optional.
-export function TaxonomyTagPicker({
-  value,
-  onChange,
-  formatLabel = defaultFormatLabel,
-  error,
-  id,
-}: TaxonomyTagPickerProps) {
+// Controlled multi-tag picker for the 4-tier taxonomy
+// Course → Subject → Chapter → Topic. Parent holds the
+// `taxonomies: TaxonomyTag[]` slice; this component fetches all four
+// dropdowns from /api/taxonomy/* (no mock data). Chip labels render real
+// names by accumulating a name cache from the courses+inline-add fetches
+// and a one-shot bootstrap fetch over the initial value's parent chains.
+export function TaxonomyTagPicker({ value, onChange, error, id }: TaxonomyTagPickerProps) {
   const [adding, setAdding] = React.useState(false)
+  const [nameMap, setNameMap] = React.useState<NameMap>(() => new Map())
+
+  // Stable callback for child fetchers to push name entries into the map.
+  const learnNames = React.useCallback(
+    (entries: ReadonlyArray<readonly [string, string]>) => {
+      setNameMap((prev) => {
+        let changed = false
+        const next = new Map(prev)
+        for (const [k, v] of entries) {
+          if (next.get(k) !== v) {
+            next.set(k, v)
+            changed = true
+          }
+        }
+        return changed ? next : prev
+      })
+    },
+    [],
+  )
+
+  // Always fetch courses up-front. The list is bounded per institute so
+  // pagination doesn't matter.
+  const coursesQuery = useQuery({
+    queryKey: ['taxonomy', 'courses'],
+    queryFn: () => apiGet<{ items: CourseRow[] }>('/api/taxonomy/courses'),
+  })
+  const courses = coursesQuery.data?.ok ? coursesQuery.data.data.items : []
+  React.useEffect(() => {
+    if (courses.length > 0) {
+      learnNames(courses.map((c) => [c.id, c.name] as const))
+    }
+  }, [courses, learnNames])
+
+  // Bootstrap names for tags supplied in the initial `value` — fire a
+  // subjects/chapters/topics fetch per unique parent id we haven't seen,
+  // then stuff names into the cache. Refs track in-flight fetches so a
+  // value-list mutation doesn't refetch what we've already pulled.
+  const fetchedSubjectParents = React.useRef<Set<string>>(new Set())
+  const fetchedChapterParents = React.useRef<Set<string>>(new Set())
+  const fetchedTopicParents = React.useRef<Set<string>>(new Set())
+
+  React.useEffect(() => {
+    const courseIds = new Set(value.map((v) => v.course_id))
+    const subjectIds = new Set(
+      value.map((v) => v.subject_id).filter((x): x is string => Boolean(x)),
+    )
+    const chapterIds = new Set(
+      value.map((v) => v.chapter_id).filter((x): x is string => Boolean(x)),
+    )
+
+    for (const courseId of courseIds) {
+      if (fetchedSubjectParents.current.has(courseId)) continue
+      fetchedSubjectParents.current.add(courseId)
+      apiGet<{ items: Subject[] }>(
+        `/api/taxonomy/subjects?course_id=${courseId}`,
+      ).then((r) => {
+        if (r.ok) learnNames(r.data.items.map((s) => [s.id, s.name] as const))
+      })
+    }
+    for (const subjectId of subjectIds) {
+      if (fetchedChapterParents.current.has(subjectId)) continue
+      fetchedChapterParents.current.add(subjectId)
+      apiGet<{ items: ChapterRow[] }>(
+        `/api/taxonomy/chapters?subject_id=${subjectId}`,
+      ).then((r) => {
+        if (r.ok) learnNames(r.data.items.map((c) => [c.id, c.name] as const))
+      })
+    }
+    for (const chapterId of chapterIds) {
+      if (fetchedTopicParents.current.has(chapterId)) continue
+      fetchedTopicParents.current.add(chapterId)
+      apiGet<{ items: TopicRow[] }>(
+        `/api/taxonomy/topics?chapter_id=${chapterId}`,
+      ).then((r) => {
+        if (r.ok) learnNames(r.data.items.map((t) => [t.id, t.name] as const))
+      })
+    }
+  }, [value, learnNames])
+
+  const formatChip = React.useCallback(
+    (tag: TaxonomyTag) => {
+      const parts: string[] = [nameMap.get(tag.course_id) ?? shortId(tag.course_id)]
+      if (tag.subject_id) {
+        parts.push(nameMap.get(tag.subject_id) ?? shortId(tag.subject_id))
+      }
+      if (tag.chapter_id) {
+        parts.push(nameMap.get(tag.chapter_id) ?? shortId(tag.chapter_id))
+      }
+      if (tag.topic_id) {
+        parts.push(nameMap.get(tag.topic_id) ?? shortId(tag.topic_id))
+      }
+      parts.push(tag.exam_type)
+      return parts.join(' → ')
+    },
+    [nameMap],
+  )
 
   const remove = (idx: number) => {
     const next = value.slice()
@@ -54,9 +146,15 @@ export function TaxonomyTagPicker({
   }
 
   const add = (tag: TaxonomyTag) => {
-    // Dedupe on (course, chapter, topic, exam_type).
+    // Dedupe on (course, subject, chapter, topic, exam_type).
     const key = (t: TaxonomyTag) =>
-      `${t.course_id}|${t.chapter_id ?? ''}|${t.topic_id ?? ''}|${t.exam_type}`
+      [
+        t.course_id,
+        t.subject_id ?? '',
+        t.chapter_id ?? '',
+        t.topic_id ?? '',
+        t.exam_type,
+      ].join('|')
     const existing = new Set(value.map(key))
     if (existing.has(key(tag))) {
       setAdding(false)
@@ -81,7 +179,7 @@ export function TaxonomyTagPicker({
         {value.map((tag, idx) => (
           <TagChip
             key={idx}
-            label={formatLabel(tag)}
+            label={formatChip(tag)}
             onRemove={() => remove(idx)}
           />
         ))}
@@ -91,13 +189,22 @@ export function TaxonomyTagPicker({
           variant="outline"
           onClick={() => setAdding((v) => !v)}
           className="ml-auto"
+          disabled={!coursesQuery.data}
         >
           <Plus className="mr-1 h-3.5 w-3.5" />
           {adding ? 'Cancel' : 'Add tag'}
         </Button>
       </div>
 
-      {adding && <InlineAddForm onConfirm={add} onCancel={() => setAdding(false)} />}
+      {adding && (
+        <InlineAddForm
+          courses={courses}
+          coursesLoading={coursesQuery.isLoading}
+          onLearnNames={learnNames}
+          onConfirm={add}
+          onCancel={() => setAdding(false)}
+        />
+      )}
 
       {error && <p className="text-sm text-destructive">{error}</p>}
     </div>
@@ -113,7 +220,7 @@ function TagChip({ label, onRemove }: { label: string; onRemove: () => void }) {
         'border-primary/30 text-foreground',
       )}
     >
-      <span className="truncate max-w-[28ch]" title={label}>
+      <span className="truncate max-w-[38ch]" title={label}>
         {label}
       </span>
       <button
@@ -129,25 +236,64 @@ function TagChip({ label, onRemove }: { label: string; onRemove: () => void }) {
 }
 
 function InlineAddForm({
+  courses,
+  coursesLoading,
+  onLearnNames,
   onConfirm,
   onCancel,
 }: {
+  courses: CourseRow[]
+  coursesLoading: boolean
+  onLearnNames: (entries: ReadonlyArray<readonly [string, string]>) => void
   onConfirm: (tag: TaxonomyTag) => void
   onCancel: () => void
 }) {
   const [courseId, setCourseId] = React.useState('')
+  const [subjectId, setSubjectId] = React.useState('')
   const [chapterId, setChapterId] = React.useState('')
   const [topicId, setTopicId] = React.useState('')
   const [examType, setExamType] = React.useState<ExamTypeValue>('jee')
 
-  const chapters = React.useMemo(
-    () => MOCK_CHAPTERS.filter((c) => c.course_id === courseId),
-    [courseId],
-  )
-  const topics = React.useMemo(
-    () => MOCK_TOPICS.filter((t) => t.chapter_id === chapterId),
-    [chapterId],
-  )
+  const subjectsQuery = useQuery({
+    queryKey: ['taxonomy', 'subjects', courseId],
+    queryFn: () =>
+      apiGet<{ items: Subject[] }>(`/api/taxonomy/subjects?course_id=${courseId}`),
+    enabled: Boolean(courseId),
+  })
+  const subjects = subjectsQuery.data?.ok ? subjectsQuery.data.data.items : []
+  React.useEffect(() => {
+    if (subjects.length > 0) {
+      onLearnNames(subjects.map((s) => [s.id, s.name] as const))
+    }
+  }, [subjects, onLearnNames])
+
+  const chaptersQuery = useQuery({
+    queryKey: ['taxonomy', 'chapters', 'by-subject', subjectId],
+    queryFn: () =>
+      apiGet<{ items: ChapterRow[] }>(
+        `/api/taxonomy/chapters?subject_id=${subjectId}`,
+      ),
+    enabled: Boolean(subjectId),
+  })
+  const chapters = chaptersQuery.data?.ok ? chaptersQuery.data.data.items : []
+  React.useEffect(() => {
+    if (chapters.length > 0) {
+      onLearnNames(chapters.map((c) => [c.id, c.name] as const))
+    }
+  }, [chapters, onLearnNames])
+
+  const topicsQuery = useQuery({
+    queryKey: ['taxonomy', 'topics', chapterId],
+    queryFn: () =>
+      apiGet<{ items: TopicRow[] }>(`/api/taxonomy/topics?chapter_id=${chapterId}`),
+    enabled: Boolean(chapterId),
+  })
+  const topics = topicsQuery.data?.ok ? topicsQuery.data.data.items : []
+  React.useEffect(() => {
+    if (topics.length > 0) {
+      onLearnNames(topics.map((t) => [t.id, t.name] as const))
+    }
+  }, [topics, onLearnNames])
 
   const canConfirm = Boolean(courseId && examType)
 
@@ -155,6 +301,7 @@ function InlineAddForm({
     if (!canConfirm) return
     onConfirm({
       course_id: courseId,
+      subject_id: subjectId || null,
       chapter_id: chapterId || null,
       topic_id: topicId || null,
       exam_type: examType,
@@ -162,7 +309,7 @@ function InlineAddForm({
   }
 
   return (
-    <div className="grid gap-3 rounded-md border bg-muted/30 p-3 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="grid gap-3 rounded-md border bg-muted/30 p-3 sm:grid-cols-2 lg:grid-cols-5">
       <div className="space-y-1">
         <Label className="text-xs">
           Course <span className="text-destructive">*</span>
@@ -171,14 +318,48 @@ function InlineAddForm({
           value={courseId}
           onChange={(e) => {
             setCourseId(e.target.value)
+            setSubjectId('')
             setChapterId('')
             setTopicId('')
           }}
         >
-          <option value="">Select course…</option>
-          {MOCK_COURSES.map((c) => (
+          <option value="">
+            {coursesLoading
+              ? 'Loading courses…'
+              : courses.length === 0
+                ? 'No courses'
+                : 'Select course…'}
+          </option>
+          {courses.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
+            </option>
+          ))}
+        </Select>
+      </div>
+      <div className="space-y-1">
+        <Label className="text-xs">Subject (optional)</Label>
+        <Select
+          value={subjectId}
+          onChange={(e) => {
+            setSubjectId(e.target.value)
+            setChapterId('')
+            setTopicId('')
+          }}
+          disabled={!courseId}
+        >
+          <option value="">
+            {!courseId
+              ? 'Pick course first'
+              : subjectsQuery.isLoading
+                ? 'Loading…'
+                : subjects.length === 0
+                  ? 'No subjects'
+                  : 'Any subject'}
+          </option>
+          {subjects.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
             </option>
           ))}
         </Select>
@@ -191,9 +372,17 @@ function InlineAddForm({
             setChapterId(e.target.value)
             setTopicId('')
           }}
-          disabled={!courseId}
+          disabled={!subjectId}
         >
-          <option value="">{courseId ? 'Any chapter' : 'Pick course first'}</option>
+          <option value="">
+            {!subjectId
+              ? 'Pick subject first'
+              : chaptersQuery.isLoading
+                ? 'Loading…'
+                : chapters.length === 0
+                  ? 'No chapters'
+                  : 'Any chapter'}
+          </option>
           {chapters.map((c) => (
             <option key={c.id} value={c.id}>
               {c.chapter_no ? `${c.chapter_no}. ${c.name}` : c.name}
@@ -208,7 +397,15 @@ function InlineAddForm({
           onChange={(e) => setTopicId(e.target.value)}
           disabled={!chapterId}
         >
-          <option value="">{chapterId ? 'Any topic' : 'Pick chapter first'}</option>
+          <option value="">
+            {!chapterId
+              ? 'Pick chapter first'
+              : topicsQuery.isLoading
+                ? 'Loading…'
+                : topics.length === 0
+                  ? 'No topics'
+                  : 'Any topic'}
+          </option>
           {topics.map((t) => (
             <option key={t.id} value={t.id}>
               {t.topic_no ? `${t.topic_no}. ${t.name}` : t.name}
@@ -228,7 +425,7 @@ function InlineAddForm({
           ))}
         </Select>
       </div>
-      <div className="flex items-center justify-end gap-2 sm:col-span-2 lg:col-span-4">
+      <div className="flex items-center justify-end gap-2 sm:col-span-2 lg:col-span-5">
         <Button type="button" size="sm" variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
@@ -238,4 +435,11 @@ function InlineAddForm({
       </div>
     </div>
   )
+}
+
+// "00000000-0000-…-deadbeef" → "deadbeef" — keeps the chip readable when
+// a name lookup hasn't landed yet.
+function shortId(id: string): string {
+  const tail = id.includes('-') ? id.split('-').pop() ?? id : id
+  return tail.length > 12 ? tail.slice(0, 12) : tail
 }

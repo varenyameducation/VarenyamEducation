@@ -31,7 +31,7 @@ import {
   type CourseSubmitValues,
 } from '@/components/taxonomy/course-modal'
 import { apiGet, apiPost, apiPut, apiDelete } from '@/lib/ui/api'
-import type { Stream } from '@/lib/ui/mocks/taxonomy'
+import type { Stream } from '@/components/taxonomy/course-modal'
 
 type CourseRow = {
   id: string
@@ -112,7 +112,7 @@ export default function TaxonomyHomePage() {
   const handleDelete = (id: string, name: string) => {
     if (
       window.confirm(
-        `Delete course "${name}"? This soft-deletes the course and all its chapters and topics.`,
+        `Delete course "${name}"? This soft-deletes the course and all its subjects, chapters, and topics.`,
       )
     ) {
       deleteMutation.mutate(id)
@@ -125,7 +125,7 @@ export default function TaxonomyHomePage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Taxonomy</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Set up Courses, Chapters, and Topics. Question tagging depends on this tree.
+            Set up Courses, Subjects, Chapters, and Topics. Question tagging depends on this tree.
           </p>
         </div>
         <Button onClick={openCreate}>
@@ -167,7 +167,7 @@ export default function TaxonomyHomePage() {
                   </CardHeader>
                   <CardContent>
                     <p className="text-xs text-muted-foreground">
-                      Open to manage chapters
+                      Open to manage subjects
                     </p>
                   </CardContent>
                 </Card>

@@ -9,24 +9,29 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import {
-  MOCK_COURSES,
-  MOCK_CHAPTERS,
-  MOCK_TOPICS,
-  SUBJECTS,
-} from '@/lib/ui/mocks/taxonomy'
-import {
   QUESTION_TYPES,
   DIFFICULTIES,
   EXAM_TYPES,
+  SUBJECTS,
 } from '@/lib/validation/question'
 import { apiGet, type Paginated, type Question } from '@/lib/ui/api'
+import type { Subject } from '@/types/taxonomy'
 
 const DEBOUNCE_MS = 400
 
+type CourseRow = { id: string; name: string }
+type ChapterRow = { id: string; subject_id: string; name: string }
+type TopicRow = { id: string; chapter_id: string; name: string }
+
 export interface PoolFilters {
   course_id?: string
+  subject_id?: string
   chapter_id?: string
   topic_id?: string
+  // Legacy `subject` string filter — chip row below the dropdowns lets the
+  // user pick by canonical four ('Physics' / 'Chemistry' / 'Maths' /
+  // 'Biology') without going through subject_id. Both are valid against
+  // the BE.
   subject?: string
   question_type?: string
   difficulty?: string
@@ -42,6 +47,7 @@ export interface QuestionFilterPanelProps {
 function buildQs(f: PoolFilters): string {
   const qs = new URLSearchParams()
   if (f.course_id) qs.set('course_id', f.course_id)
+  if (f.subject_id) qs.set('subject_id', f.subject_id)
   if (f.chapter_id) qs.set('chapter_id', f.chapter_id)
   if (f.topic_id) qs.set('topic_id', f.topic_id)
   if (f.subject) qs.set('subject', f.subject)
@@ -75,20 +81,43 @@ export function QuestionFilterPanel({ value, onChange }: QuestionFilterPanelProp
     return () => clearTimeout(t)
   }, [searchInput, value, onChange])
 
-  const chapters = React.useMemo(
-    () =>
-      MOCK_CHAPTERS.filter(
-        (c) => !value.course_id || c.course_id === value.course_id,
+  // Live taxonomy fetches — dependent on parent selection. All endpoints
+  // return a bounded list per institute so no pagination handling here.
+  const coursesQuery = useQuery({
+    queryKey: ['taxonomy', 'courses'],
+    queryFn: () => apiGet<{ items: CourseRow[] }>('/api/taxonomy/courses'),
+  })
+  const courses = coursesQuery.data?.ok ? coursesQuery.data.data.items : []
+
+  const subjectsQuery = useQuery({
+    queryKey: ['taxonomy', 'subjects', value.course_id],
+    queryFn: () =>
+      apiGet<{ items: Subject[] }>(
+        `/api/taxonomy/subjects?course_id=${value.course_id}`,
       ),
-    [value.course_id],
-  )
-  const topics = React.useMemo(
-    () =>
-      MOCK_TOPICS.filter(
-        (t) => !value.chapter_id || t.chapter_id === value.chapter_id,
+    enabled: Boolean(value.course_id),
+  })
+  const subjects = subjectsQuery.data?.ok ? subjectsQuery.data.data.items : []
+
+  const chaptersQuery = useQuery({
+    queryKey: ['taxonomy', 'chapters', 'by-subject', value.subject_id],
+    queryFn: () =>
+      apiGet<{ items: ChapterRow[] }>(
+        `/api/taxonomy/chapters?subject_id=${value.subject_id}`,
       ),
-    [value.chapter_id],
-  )
+    enabled: Boolean(value.subject_id),
+  })
+  const chapters = chaptersQuery.data?.ok ? chaptersQuery.data.data.items : []
+
+  const topicsQuery = useQuery({
+    queryKey: ['taxonomy', 'topics', value.chapter_id],
+    queryFn: () =>
+      apiGet<{ items: TopicRow[] }>(
+        `/api/taxonomy/topics?chapter_id=${value.chapter_id}`,
+      ),
+    enabled: Boolean(value.chapter_id),
+  })
+  const topics = topicsQuery.data?.ok ? topicsQuery.data.data.items : []
 
   const set = (patch: Partial<PoolFilters>) => onChange({ ...value, ...patch })
 
@@ -118,15 +147,39 @@ export function QuestionFilterPanel({ value, onChange }: QuestionFilterPanelProp
           onChange={(e) =>
             set({
               course_id: e.target.value || undefined,
+              subject_id: undefined,
               chapter_id: undefined,
               topic_id: undefined,
             })
           }
         >
           <option value="">All courses</option>
-          {MOCK_COURSES.map((c) => (
+          {courses.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
+            </option>
+          ))}
+        </Select>
+      </div>
+
+      <div className="space-y-1.5">
+        <Label htmlFor="tb-subject-id">Subject (taxonomy)</Label>
+        <Select
+          id="tb-subject-id"
+          value={value.subject_id ?? ''}
+          disabled={!value.course_id}
+          onChange={(e) =>
+            set({
+              subject_id: e.target.value || undefined,
+              chapter_id: undefined,
+              topic_id: undefined,
+            })
+          }
+        >
+          <option value="">All subjects</option>
+          {subjects.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
             </option>
           ))}
         </Select>
@@ -137,7 +190,7 @@ export function QuestionFilterPanel({ value, onChange }: QuestionFilterPanelProp
         <Select
           id="tb-chapter"
           value={value.chapter_id ?? ''}
-          disabled={!value.course_id}
+          disabled={!value.subject_id}
           onChange={(e) =>
             set({ chapter_id: e.target.value || undefined, topic_id: undefined })
           }
@@ -169,7 +222,7 @@ export function QuestionFilterPanel({ value, onChange }: QuestionFilterPanelProp
       </div>
 
       <div className="space-y-1.5">
-        <Label>Subject</Label>
+        <Label>Subject (canonical)</Label>
         <div className="flex flex-wrap gap-1.5">
           {SUBJECTS.map((s) => {
             const active = value.subject === s
