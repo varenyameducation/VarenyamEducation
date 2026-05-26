@@ -10,11 +10,9 @@ import {
   BorderStyle,
   PageNumber,
   ShadingType,
-  Tab,
   Table,
   TableRow,
   TableCell,
-  TabStopType,
   WidthType,
   type ISectionOptions,
   type ParagraphChild,
@@ -54,12 +52,12 @@ function brandTintHex(brandHex: string): string {
   return `${toHex(mix(r))}${toHex(mix(g))}${toHex(mix(b))}`
 }
 
-// Load the bundled Varenyam wordmark off disk. Cached for the process.
+// Load the bundled Varenyam icon-only mark off disk. Cached for the process.
 let cachedLogo: Buffer | null = null
 function readBrandLogoBuffer(): Buffer | null {
   if (cachedLogo) return cachedLogo
   try {
-    const p = path.join(process.cwd(), 'public', 'brand', 'varenyam-logo-full.png')
+    const p = path.join(process.cwd(), 'public', 'brand', 'varenyam-logo-mark.png')
     cachedLogo = fs.readFileSync(p)
     return cachedLogo
   } catch {
@@ -115,9 +113,9 @@ async function inlineRuns(source: string | null | undefined): Promise<ParagraphC
 }
 
 const IMG_PLACEHOLDER_RE = /\[\[IMG:([^\]]+)\]\]/g
-// Diagram cap — matches PaperTemplate.tsx (max 280×180 px).
-const DOC_IMAGE_MAX_W = 280
-const DOC_IMAGE_MAX_H = 180
+// Diagram cap — matches PaperTemplate.tsx (max 200×140 px).
+const DOC_IMAGE_MAX_W = 200
+const DOC_IMAGE_MAX_H = 140
 
 async function fetchImageBuffer(url: string): Promise<Buffer | null> {
   try {
@@ -207,8 +205,7 @@ function buildHeaderBlock(branding: Branding): Paragraph[] {
   const accent = brandColorHex(branding)
   const out: Paragraph[] = []
 
-  // Logo on a centered line (docx makes side-by-side layout awkward without
-  // a table; using an in-line image keeps the file simple and prints well).
+  // Icon-only mark on a centered line (250×230 source PNG → ~50×46 on page).
   const logoBuf = readBrandLogoBuffer()
   if (logoBuf) {
     out.push(
@@ -219,7 +216,7 @@ function buildHeaderBlock(branding: Branding): Paragraph[] {
           new ImageRun({
             type: 'png',
             data: logoBuf,
-            transformation: { width: 130, height: 70 },
+            transformation: { width: 50, height: 46 },
           }),
         ],
       }),
@@ -240,17 +237,6 @@ function buildHeaderBlock(branding: Branding): Paragraph[] {
       ],
     }),
   )
-  if (branding.tagline) {
-    out.push(
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        spacing: { before: 0, after: 60 },
-        children: [
-          new TextRun({ text: branding.tagline, italics: true, size: 20, color: COLOR_SUBTLE }),
-        ],
-      }),
-    )
-  }
   // Brand-red 1px horizontal divider under the header.
   out.push(
     new Paragraph({
@@ -313,27 +299,6 @@ function buildMetaBlock(
       { label: 'Maximum Marks:', value: String(totalMarks), accent },
       { label: 'Topic:', value: topic, accent },
     ]),
-  )
-
-  // Student Name + Roll No. lines.
-  out.push(
-    new Paragraph({
-      spacing: { before: 80, after: 60 },
-      tabStops: [
-        { type: TabStopType.LEFT, position: 800 },
-        { type: TabStopType.RIGHT, position: 7200 },
-        { type: TabStopType.LEFT, position: 7600 },
-      ],
-      children: [
-        new TextRun({ text: 'Student Name:', bold: true, color: accent, size: 22 }),
-        new TextRun({ children: [new Tab()] }),
-        new TextRun({ text: '_'.repeat(40), color: COLOR_SUBTLE, size: 18 }),
-        new TextRun({ children: [new Tab()] }),
-        new TextRun({ text: 'Roll No.:', bold: true, color: accent, size: 22 }),
-        new TextRun({ children: [new Tab()] }),
-        new TextRun({ text: '_'.repeat(15), color: COLOR_SUBTLE, size: 18 }),
-      ],
-    }),
   )
 
   // General Instructions block.
@@ -544,27 +509,6 @@ function blankCellBorders() {
   return { top: none, bottom: none, left: none, right: none, start: none, end: none }
 }
 
-function answerLineParagraphs(qtype: string, marks: number): Paragraph[] {
-  let n: number
-  if (qtype === 'numerical') n = 1
-  else if (qtype === 'matrix_match') n = 0
-  else n = Math.min(6, Math.max(2, Math.ceil(marks * 2)))
-  const out: Paragraph[] = []
-  for (let i = 0; i < n; i++) {
-    out.push(
-      new Paragraph({
-        spacing: { before: 40, after: 0 },
-        indent: { left: 540 },
-        border: {
-          bottom: { style: BorderStyle.DOTTED, size: 6, space: 1, color: COLOR_HAIRLINE },
-        },
-        children: [new TextRun({ text: '' })],
-      }),
-    )
-  }
-  return out
-}
-
 function marksChipParagraph(marks: number | string): Paragraph {
   return new Paragraph({
     alignment: AlignmentType.RIGHT,
@@ -598,7 +542,6 @@ async function buildQuestionParagraphs(
     for (const row of group.rows) {
       const q = row.question
       const marksRaw = row.marks_override ?? q.marks_correct
-      const marksNum = Number(marksRaw) || 0
       const indexNum = runningIndex
       runningIndex += 1
 
@@ -617,8 +560,6 @@ async function buildQuestionParagraphs(
 
       if (q.question_type === 'mcq' || q.question_type === 'multi_select') {
         out.push(await buildMcqTable(q))
-      } else {
-        out.push(...answerLineParagraphs(q.question_type, marksNum))
       }
       out.push(marksChipParagraph(String(marksRaw)))
     }
@@ -657,11 +598,6 @@ function buildRunningHeader(branding: Branding): Header {
         border: { bottom: { style: BorderStyle.SINGLE, size: 4, space: 2, color: accent } },
         children: [
           new TextRun({ text: branding.inst_name, size: 16, color: accent, bold: true }),
-          ...(branding.tagline
-            ? [
-                new TextRun({ text: '   ' + branding.tagline, size: 14, italics: true, color: COLOR_SUBTLE }),
-              ]
-            : []),
         ],
       }),
     ],

@@ -51,14 +51,14 @@ function escapeHtml(input: string): string {
     .replace(/"/g, '&quot;')
 }
 
-// Read the bundled Varenyam wordmark off disk and base64-encode it so
+// Read the bundled Varenyam icon-only mark off disk and base64-encode it so
 // Puppeteer can render the `<img src>` without going to the network.
 // Cached after first read for the lifetime of the process.
 let cachedBrandLogo: string | null = null
 function readBrandLogoDataUrl(): string | null {
   if (cachedBrandLogo) return cachedBrandLogo
   try {
-    const p = path.join(process.cwd(), 'public', 'brand', 'varenyam-logo-full.png')
+    const p = path.join(process.cwd(), 'public', 'brand', 'varenyam-logo-mark.png')
     const buf = fs.readFileSync(p)
     cachedBrandLogo = `data:image/png;base64,${buf.toString('base64')}`
     return cachedBrandLogo
@@ -75,7 +75,7 @@ export async function generateTestPDF(testId: string): Promise<Buffer> {
   const signedLogo = await resolveLogoSignedUrl(branding.logo_url)
   const brandingWithLogo: Branding = { ...branding, logo_url: signedLogo }
 
-  // Default logo (Varenyam wordmark) → inlined for Puppeteer. PaperTemplate
+  // Default logo (Varenyam icon-only mark) → inlined for Puppeteer. PaperTemplate
   // prefers branding.logo_url if the institute has set one; otherwise it
   // falls back to this prop.
   const defaultLogoDataUrl = readBrandLogoDataUrl() ?? undefined

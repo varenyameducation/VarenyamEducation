@@ -14,10 +14,10 @@ const COLOR_HAIRLINE = '#D1D5DB'
 
 const OPTION_LETTERS = ['A', 'B', 'C', 'D'] as const
 
-// Bundled Varenyam wordmark — served from /public/brand by Next.js in the
-// browser preview, and inlined as a data URL by pdf.ts before Puppeteer
+// Bundled Varenyam icon-only mark — served from /public/brand by Next.js in
+// the browser preview, and inlined as a data URL by pdf.ts before Puppeteer
 // renders the page (Puppeteer's setContent has no base URL).
-const DEFAULT_LOGO_SRC = '/brand/varenyam-logo-full.png'
+const DEFAULT_LOGO_SRC = '/brand/varenyam-logo-mark.png'
 
 export type PaperQuestion = {
   id: string
@@ -72,7 +72,7 @@ function renderKatex(source: string | null | undefined): string {
 
 // Render a body that may contain inline `[[IMG:<url>]]` placeholders plus
 // LaTeX-ish text. Adjacent image placeholders sit side-by-side; each image
-// is capped at 280×180 px so diagrams stop blowing up the page.
+// is capped at 200×140 px to match the reference paper.
 function renderBodyWithImages(source: string | null | undefined): string {
   if (!source) return ''
   const re = /\[\[IMG:([^\]]+)\]\]/g
@@ -112,7 +112,7 @@ function renderBodyWithImages(source: string | null | undefined): string {
       break
     }
     const imgStyle =
-      'display:block;max-width:280px;max-height:180px;width:auto;height:auto;object-fit:contain;'
+      'display:block;max-width:200px;max-height:140px;width:auto;height:auto;object-fit:contain;'
     if (urls.length === 1) {
       const url = urls[0].replace(/"/g, '&quot;')
       out.push(
@@ -195,13 +195,6 @@ function buildMarkingScheme(rows: PaperRow[]): MarkingSchemeRow[] {
   })
 }
 
-function answerLineCount(qtype: string, marks: number): number {
-  if (qtype === 'numerical') return 1
-  if (qtype === 'matrix_match') return 0
-  const lines = Math.ceil(marks * 2)
-  return Math.min(6, Math.max(2, lines))
-}
-
 const DEFAULT_INSTRUCTIONS = [
   'All questions are compulsory.',
   'Read each question carefully before answering.',
@@ -251,7 +244,7 @@ export function PaperTemplate({
         lineHeight: 1.4,
       }}
     >
-      {/* Header: logo + inst name + tagline */}
+      {/* Header: icon-only logo + centered inst name. No tagline. */}
       <header
         style={{
           display: 'flex',
@@ -261,24 +254,24 @@ export function PaperTemplate({
           borderBottom: `1px solid ${BRAND_RED}`,
         }}
       >
-        <div style={{ width: 110, flexShrink: 0 }}>
+        <div style={{ width: 50, flexShrink: 0 }}>
           {effectiveLogo ? (
             <img
               src={effectiveLogo}
               alt="logo"
-              style={{ width: 110, height: 'auto', display: 'block' }}
+              style={{ width: 'auto', height: 44, display: 'block' }}
             />
           ) : (
             <div
               style={{
-                width: 110,
-                height: 60,
+                width: 50,
+                height: 44,
                 border: `1px dashed ${brand}`,
                 color: brand,
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                fontSize: 10,
+                fontSize: 9,
                 fontWeight: 700,
                 letterSpacing: 1.2,
               }}
@@ -299,20 +292,8 @@ export function PaperTemplate({
           >
             {branding.inst_name}
           </div>
-          {branding.tagline ? (
-            <div
-              style={{
-                fontSize: 11,
-                fontStyle: 'italic',
-                color: COLOR_SUBTLE,
-                marginTop: 2,
-              }}
-            >
-              {branding.tagline}
-            </div>
-          ) : null}
         </div>
-        <div style={{ width: 110, flexShrink: 0 }} />
+        <div style={{ width: 50, flexShrink: 0 }} />
       </header>
 
       {/* Board / standard line */}
@@ -366,42 +347,6 @@ export function PaperTemplate({
         <div>
           <span style={{ fontWeight: 700, color: brand }}>Topic:</span>{' '}
           {meta.topic ?? meta.subject ?? '—'}
-        </div>
-      </div>
-
-      {/* Student name + roll no dotted lines */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '2fr 1fr',
-          columnGap: 24,
-          margin: '8px 0 14px',
-          fontSize: 11,
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-          <span style={{ fontWeight: 700, color: brand, whiteSpace: 'nowrap' }}>
-            Student Name:
-          </span>
-          <span
-            style={{
-              flex: 1,
-              borderBottom: `1px dotted ${COLOR_SUBTLE}`,
-              height: 14,
-            }}
-          />
-        </div>
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-          <span style={{ fontWeight: 700, color: brand, whiteSpace: 'nowrap' }}>
-            Roll No.:
-          </span>
-          <span
-            style={{
-              flex: 1,
-              borderBottom: `1px dotted ${COLOR_SUBTLE}`,
-              height: 14,
-            }}
-          />
         </div>
       </div>
 
@@ -571,9 +516,7 @@ function SectionBar({ brand, label }: { brand: string; label: string }) {
 function QuestionRow({ index, row, brand }: { index: number; row: PaperRow; brand: string }) {
   const q = row.question
   const marks = row.marks_override ?? q.marks_correct
-  const marksNum = Number(marks) || 0
   const isMcq = q.question_type === 'mcq' || q.question_type === 'multi_select'
-  const lines = answerLineCount(q.question_type, marksNum)
 
   return (
     <div
@@ -614,20 +557,7 @@ function QuestionRow({ index, row, brand }: { index: number; row: PaperRow; bran
             )
           })}
         </div>
-      ) : (
-        <div style={{ marginLeft: 28, marginTop: 4 }}>
-          {Array.from({ length: lines }).map((_, i) => (
-            <div
-              key={i}
-              style={{
-                borderBottom: `1px dotted ${COLOR_HAIRLINE}`,
-                height: 18,
-                marginTop: 4,
-              }}
-            />
-          ))}
-        </div>
-      )}
+      ) : null}
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 2 }}>
         <span
           style={{
