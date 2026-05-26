@@ -79,10 +79,22 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
   }
 
   const now = new Date()
-  const chapters = await prisma.chapter.findMany({
+
+  // Cascade walks: Course → Subjects → Chapters → Topics. One extra hop vs.
+  // the pre-Subject-tier schema; the chain is built up by ID set first so
+  // each updateMany sees a deterministic batch even if rows shift mid-tx.
+  const subjects = await prisma.subject.findMany({
     where: { course_id: params.id, deleted_at: null },
     select: { id: true },
   })
+  const subjectIds = subjects.map((s) => s.id)
+
+  const chapters = subjectIds.length
+    ? await prisma.chapter.findMany({
+        where: { subject_id: { in: subjectIds }, deleted_at: null },
+        select: { id: true },
+      })
+    : []
   const chapterIds = chapters.map((c) => c.id)
 
   await prisma.$transaction([
@@ -91,6 +103,10 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
       data: { deleted_at: now, is_active: false },
     }),
     prisma.chapter.updateMany({
+      where: { subject_id: { in: subjectIds }, deleted_at: null },
+      data: { deleted_at: now, is_active: false },
+    }),
+    prisma.subject.updateMany({
       where: { course_id: params.id, deleted_at: null },
       data: { deleted_at: now, is_active: false },
     }),
@@ -105,7 +121,10 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
     action: 'taxonomy.course.delete',
     entity_type: 'course',
     entity_id: params.id,
-    meta: { cascaded_chapters: chapterIds.length },
+    meta: {
+      cascaded_subjects: subjectIds.length,
+      cascaded_chapters: chapterIds.length,
+    },
     ip_address: request.headers.get('x-forwarded-for'),
   })
 

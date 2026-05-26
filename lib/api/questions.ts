@@ -26,8 +26,15 @@ const optionLetter = z.enum(OPTION_VALUES)
 
 // A single taxonomy tag attached to a question via the question_taxonomies junction.
 // A question can have many of these (multi-course, multi-exam, etc.).
+//
+// With the Subject-tier hierarchy (Course → Subject → Chapter → Topic), every
+// level below `course_id` is optional — a tag at the course level only is
+// valid. `subject_id` is the new tier added in this migration; it lives on
+// the junction so callers can scope a question to a Subject without picking a
+// specific Chapter.
 export const taxonomyTagSchema = z.object({
   course_id: z.string().uuid(),
+  subject_id: z.string().uuid().nullish().transform((v) => v ?? null),
   chapter_id: z.string().uuid().nullish().transform((v) => v ?? null),
   topic_id: z.string().uuid().nullish().transform((v) => v ?? null),
   exam_type: z.enum(EXAM_TYPE_VALUES),
@@ -139,6 +146,7 @@ export type UpdateQuestionInput = z.infer<typeof updateQuestionSchema>
 export const listQuerySchema = z.object({
   // taxonomy filters: these all filter via question_taxonomies (junction)
   course_id: z.string().uuid().optional(),
+  subject_id: z.string().uuid().optional(),
   chapter_id: z.string().uuid().optional(),
   topic_id: z.string().uuid().optional(),
   exam_type: z.enum(EXAM_TYPE_VALUES).optional(),
@@ -179,59 +187,64 @@ export function getClientIp(request: Request): string | null {
 export const taxonomyRowSelect = {
   id: true,
   course_id: true,
+  subject_id: true,
   chapter_id: true,
   topic_id: true,
   exam_type: true,
   created_at: true,
   course: { select: { id: true, name: true } },
-  chapter: { select: { id: true, name: true, subject: true } },
+  subject: { select: { id: true, name: true } },
+  chapter: { select: { id: true, name: true } },
   topic: { select: { id: true, name: true } },
 } as const
 
 export type QuestionTaxonomyRowWithNames = {
   id: string
   course_id: string
+  subject_id: string | null
   chapter_id: string | null
   topic_id: string | null
   exam_type: string
   created_at: Date
   course: { id: string; name: string } | null
-  chapter: { id: string; name: string; subject: string } | null
+  subject: { id: string; name: string } | null
+  chapter: { id: string; name: string } | null
   topic: { id: string; name: string } | null
 }
 
 export type FlattenedTaxonomyRow = {
   id: string
   course_id: string
+  subject_id: string | null
   chapter_id: string | null
   topic_id: string | null
   exam_type: string
   created_at: Date
   course_name?: string
+  subject_name?: string
   chapter_name: string | null
   topic_name: string | null
-  subject?: 'Physics' | 'Chemistry' | 'Maths' | 'Biology'
+  // `subject` stays for backward compat with the pre-Subject-tier FE — it now
+  // mirrors `subject_name` (was previously sourced from chapter.subject).
+  subject?: string
 }
 
-// Flatten the nested Course/Chapter/Topic includes into the row so the wire
-// shape matches the extended `TaxonomyTagRow` in `types/taxonomy.ts`.
+// Flatten the nested Course/Subject/Chapter/Topic includes into the row so
+// the wire shape matches the extended `TaxonomyTagRow` in `types/taxonomy.ts`.
 export function flattenTaxonomyRow(t: QuestionTaxonomyRowWithNames): FlattenedTaxonomyRow {
   return {
     id: t.id,
     course_id: t.course_id,
+    subject_id: t.subject_id,
     chapter_id: t.chapter_id,
     topic_id: t.topic_id,
     exam_type: t.exam_type,
     created_at: t.created_at,
     course_name: t.course?.name,
+    subject_name: t.subject?.name,
     chapter_name: t.chapter?.name ?? null,
     topic_name: t.topic?.name ?? null,
-    subject: t.chapter?.subject as
-      | 'Physics'
-      | 'Chemistry'
-      | 'Maths'
-      | 'Biology'
-      | undefined,
+    subject: t.subject?.name,
   }
 }
 

@@ -175,6 +175,7 @@ async function fetchCandidates(args: {
   const taxonomyAnd: Prisma.QuestionTaxonomyWhereInput = {
     course_id: input.course_id,
     exam_type: input.exam_type,
+    ...(section.subject_id ? { subject_id: section.subject_id } : {}),
     ...(section.chapter_ids && section.chapter_ids.length > 0
       ? { chapter_id: { in: section.chapter_ids } }
       : {}),

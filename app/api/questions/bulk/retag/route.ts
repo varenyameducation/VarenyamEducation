@@ -58,6 +58,7 @@ export async function POST(request: NextRequest) {
         add.map((t) => ({
           question_id: qid,
           course_id: t.course_id,
+          subject_id: t.subject_id,
           chapter_id: t.chapter_id,
           topic_id: t.topic_id,
           exam_type: t.exam_type,
@@ -68,12 +69,14 @@ export async function POST(request: NextRequest) {
     }
 
     if (remove && remove.length > 0) {
-      // Build an OR condition matching any (question_id, course_id, chapter_id, topic_id, exam_type)
-      // tuple from the cartesian product of question_ids × remove.
+      // Build an OR condition matching any (question_id, course_id, subject_id,
+      // chapter_id, topic_id, exam_type) tuple from the cartesian product of
+      // question_ids × remove.
       const conditions = question_ids.flatMap((qid) =>
         remove.map((t) => ({
           question_id: qid,
           course_id: t.course_id,
+          subject_id: t.subject_id,
           chapter_id: t.chapter_id,
           topic_id: t.topic_id,
           exam_type: t.exam_type,

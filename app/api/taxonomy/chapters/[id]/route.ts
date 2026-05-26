@@ -5,13 +5,10 @@ import { err, ok } from '@/lib/api/response'
 import { logAudit } from '@/lib/auth/audit'
 import { isAuthFailure, isParseFailure, parseJsonBody, requireAuth } from '@/lib/api/taxonomy'
 
-// TODO: replace with import once integration/taxonomy-types merges
-const SUBJECT_VALUES = ['Physics', 'Chemistry', 'Maths', 'Biology'] as const
-
 const updateChapterSchema = z
   .object({
     name: z.string().trim().min(1).max(200).optional(),
-    subject: z.enum(SUBJECT_VALUES).optional(),
+    subject_id: z.string().uuid().optional(),
     chapter_no: z.number().int().min(0).max(32767).nullish(),
   })
   .refine((v) => Object.keys(v).length > 0, { message: 'At least one field required' })
@@ -38,13 +35,25 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
     return err(404, { code: 'CHAPTER_NOT_FOUND', message: 'Chapter not found' })
   }
 
-  const { name, subject, chapter_no } = parsed.data
+  const { name, subject_id, chapter_no } = parsed.data
+
+  if (subject_id && subject_id !== existing.subject_id) {
+    const newParent = await prisma.subject.findFirst({
+      where: { id: subject_id, deleted_at: null },
+    })
+    if (!newParent) {
+      return err(404, {
+        code: 'SUBJECT_NOT_FOUND',
+        message: 'Target subject does not exist or has been deleted',
+      })
+    }
+  }
 
   const chapter = await prisma.chapter.update({
     where: { id: params.id },
     data: {
       ...(name !== undefined ? { name } : {}),
-      ...(subject !== undefined ? { subject } : {}),
+      ...(subject_id !== undefined ? { subject_id } : {}),
       ...(chapter_no !== undefined ? { chapter_no: chapter_no ?? null } : {}),
     },
   })
