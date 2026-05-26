@@ -5,6 +5,9 @@ import { PaperTemplate, type PaperMeta, type PaperRow } from './PaperTemplate'
 type Props = {
   test: TestWithQuestions
   branding: Branding
+  // Inlined logo data URL — pdf.ts reads /public/brand/varenyam-logo-full.png
+  // and base64-encodes it so Puppeteer can render without a base URL.
+  logoSrc?: string
 }
 
 function computeTotalMarks(test: TestWithQuestions): number {
@@ -19,7 +22,7 @@ function computeTotalMarks(test: TestWithQuestions): number {
   return total
 }
 
-export function TestPaperDocument({ test, branding }: Props) {
+export function TestPaperDocument({ test, branding, logoSrc }: Props) {
   const meta: PaperMeta = {
     title: test.title,
     course_name: test.course?.name ?? null,
@@ -56,15 +59,24 @@ export function TestPaperDocument({ test, branding }: Props) {
         <style
           dangerouslySetInnerHTML={{
             __html: `
-              @page { size: A4; margin: 18mm 16mm; }
+              /* Page setup matches the reference DOCX — US Letter with
+                 narrow top + right margins, comfortable left + bottom. */
+              @page {
+                size: letter;
+                margin: 14mm 6mm 18mm 25mm;
+              }
               html, body { margin: 0; padding: 0; }
-              body { padding: 0; }
+              body {
+                padding: 0;
+                font-family: 'Georgia', 'Liberation Serif', serif;
+                color: #1F2937;
+              }
             `,
           }}
         />
       </head>
       <body>
-        <PaperTemplate meta={meta} rows={rows} branding={branding} />
+        <PaperTemplate meta={meta} rows={rows} branding={branding} logoSrc={logoSrc} />
       </body>
     </html>
   )

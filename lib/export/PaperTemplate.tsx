@@ -2,11 +2,22 @@ import * as React from 'react'
 import katex from 'katex'
 import type { Branding } from './branding'
 
+// --- Brand palette (locked by orchestrator). Reads `brand_color_hex` from
+// InstituteBranding; falls back to the new Varenyam teal if the row is
+// missing or still carries the old `1B3A6B` navy default.
+const BRAND_DEFAULT = '#0E6E84' // primary teal
+const BRAND_LEGACY = '1B3A6B' // old navy default we override
+const BRAND_RED = '#D63D2F' // horizontal dividers, marks chip border
+const COLOR_TEXT = '#1F2937'
+const COLOR_SUBTLE = '#6B7280'
+const COLOR_HAIRLINE = '#D1D5DB'
+
 const OPTION_LETTERS = ['A', 'B', 'C', 'D'] as const
 
-const COLOR_TEXT = '#1a1a1a'
-const COLOR_MUTED = '#666'
-const COLOR_LINE = '#bbb'
+// Bundled Varenyam wordmark — served from /public/brand by Next.js in the
+// browser preview, and inlined as a data URL by pdf.ts before Puppeteer
+// renders the page (Puppeteer's setContent has no base URL).
+const DEFAULT_LOGO_SRC = '/brand/varenyam-logo-full.png'
 
 export type PaperQuestion = {
   id: string
@@ -32,6 +43,12 @@ export type PaperMeta = {
   course_name?: string | null
   subject?: string | null
   exam_type?: string | null
+  // Optional board/standard label, rendered bold in brand teal above the
+  // meta grid (e.g. "Board: CBSE (Standard)"). Falls back to a synthesised
+  // "Course (Class N)" if not provided.
+  board_label?: string | null
+  // Optional topic label rendered in the meta grid alongside Time / Marks.
+  topic?: string | null
   duration_minutes: number
   total_marks: number
   instructions?: string | null
@@ -54,14 +71,11 @@ function renderKatex(source: string | null | undefined): string {
 }
 
 // Render a body that may contain inline `[[IMG:<url>]]` placeholders plus
-// LaTeX-ish text. Adjacent image placeholders (no text between them, or only
-// whitespace) render in a centered flex row so two narrow figures can sit
-// side-by-side when they fit; otherwise they stack naturally. Each image is
-// capped at 4cm tall so a single figure cannot eat the page.
+// LaTeX-ish text. Adjacent image placeholders sit side-by-side; each image
+// is capped at 280×180 px so diagrams stop blowing up the page.
 function renderBodyWithImages(source: string | null | undefined): string {
   if (!source) return ''
   const re = /\[\[IMG:([^\]]+)\]\]/g
-  // Tokenize into a sequence of {text} and {img} parts.
   type Part = { kind: 'text'; value: string } | { kind: 'img'; url: string }
   const parts: Part[] = []
   let last = 0
@@ -82,7 +96,6 @@ function renderBodyWithImages(source: string | null | undefined): string {
       i++
       continue
     }
-    // Collect a run of adjacent images (allowing whitespace-only text between).
     const urls: string[] = [p.url]
     let j = i + 1
     while (j < parts.length) {
@@ -92,27 +105,28 @@ function renderBodyWithImages(source: string | null | undefined): string {
         j++
         continue
       }
-      // text part — only swallow if pure whitespace
       if (next.value.trim() === '') {
         j++
         continue
       }
       break
     }
+    const imgStyle =
+      'display:block;max-width:280px;max-height:180px;width:auto;height:auto;object-fit:contain;'
     if (urls.length === 1) {
       const url = urls[0].replace(/"/g, '&quot;')
       out.push(
-        `<img src="${url}" alt="" style="display:block;max-width:100%;max-height:4cm;margin:4mm auto;" />`,
+        `<figure style="margin:6px auto;text-align:center;"><img src="${url}" alt="" style="${imgStyle}margin:0 auto;" /></figure>`,
       )
     } else {
       const inner = urls
         .map(
           (u) =>
-            `<img src="${u.replace(/"/g, '&quot;')}" alt="" style="max-width:100%;max-height:4cm;display:block;" />`,
+            `<img src="${u.replace(/"/g, '&quot;')}" alt="" style="${imgStyle}" />`,
         )
         .join('')
       out.push(
-        `<div style="display:flex;gap:8mm;justify-content:center;align-items:flex-end;flex-wrap:wrap;margin:4mm 0;">${inner}</div>`,
+        `<figure style="display:flex;gap:12px;justify-content:center;align-items:flex-end;flex-wrap:wrap;margin:6px 0;">${inner}</figure>`,
       )
     }
     i = j
@@ -127,26 +141,22 @@ function escapeHtml(input: string): string {
     .replace(/>/g, '&gt;')
 }
 
-function brandColor(hex: string): string {
-  return hex.startsWith('#') ? hex : `#${hex}`
+// Read brand color from branding row. Treat the legacy navy default and
+// missing value as "use the new Varenyam teal".
+function resolveBrandColor(branding: Branding): string {
+  const raw = (branding.brand_color_hex ?? '').replace(/^#/, '')
+  if (!raw || raw.toUpperCase() === BRAND_LEGACY) return BRAND_DEFAULT
+  return raw.startsWith('#') ? raw : `#${raw}`
 }
 
 function tintedFromBrand(hex: string): string {
-  // Produce a very light tint of the brand color for the instruction box
-  // background. Falls back to a neutral grey-blue if hex parse fails.
   const m = /^#?([0-9a-fA-F]{6})$/.exec(hex)
-  if (!m) return '#f4f6fa'
+  if (!m) return '#F4F6FA'
   const r = parseInt(m[1].slice(0, 2), 16)
   const g = parseInt(m[1].slice(2, 4), 16)
   const b = parseInt(m[1].slice(4, 6), 16)
-  // Mix 8% brand into white.
-  const mix = (c: number) => Math.round(c * 0.08 + 255 * 0.92)
+  const mix = (c: number) => Math.round(c * 0.1 + 255 * 0.9)
   return `rgb(${mix(r)}, ${mix(g)}, ${mix(b)})`
-}
-
-function examTypeLabel(t: string | null | undefined): string | null {
-  if (!t) return null
-  return t.toUpperCase()
 }
 
 function groupBySection(rows: PaperRow[]): { label: string | null; rows: PaperRow[] }[] {
@@ -163,345 +173,345 @@ function groupBySection(rows: PaperRow[]): { label: string | null; rows: PaperRo
   return groups
 }
 
-function sectionBlueprintSummary(
-  rows: PaperRow[],
-  startIndex: number,
-): string {
-  if (rows.length === 0) return ''
-  const endIndex = startIndex + rows.length - 1
-  const marksList = rows.map((r) =>
-    Number(r.marks_override ?? r.question.marks_correct) || 0,
-  )
-  const total = marksList.reduce((a, b) => a + b, 0)
-  const uniform = marksList.every((m) => m === marksList[0]) ? marksList[0] : null
-  const range = startIndex === endIndex ? `Q${startIndex}` : `Q${startIndex}–Q${endIndex}`
-  if (uniform != null) {
-    return `(${range} · ${rows.length} × ${uniform} = ${total} marks)`
-  }
-  return `(${range} · ${rows.length} questions · ${total} marks)`
+type MarkingSchemeRow = {
+  section: string
+  marksPerQuestion: number | string
+  numQuestions: number
+  total: number
+}
+
+function buildMarkingScheme(rows: PaperRow[]): MarkingSchemeRow[] {
+  const groups = groupBySection(rows)
+  return groups.map((g, idx) => {
+    const marks = g.rows.map((r) => Number(r.marks_override ?? r.question.marks_correct) || 0)
+    const total = marks.reduce((a, b) => a + b, 0)
+    const uniform = marks.every((m) => m === marks[0]) ? marks[0] : null
+    return {
+      section: g.label ?? `Section ${String.fromCharCode(65 + idx)}`,
+      marksPerQuestion: uniform != null ? uniform : 'Mixed',
+      numQuestions: g.rows.length,
+      total,
+    }
+  })
 }
 
 function answerLineCount(qtype: string, marks: number): number {
   if (qtype === 'numerical') return 1
   if (qtype === 'matrix_match') return 0
-  // 2 lines per mark, capped between 2 and 6.
   const lines = Math.ceil(marks * 2)
   return Math.min(6, Math.max(2, lines))
 }
 
-const styles = {
-  page: {
-    fontFamily: "'Times New Roman', 'Liberation Serif', serif",
-    color: COLOR_TEXT,
-    fontSize: 12,
-    lineHeight: 1.45,
-  } as React.CSSProperties,
-  // Header layout: logo | name+tagline | roll/name stub
-  headerRow: {
-    display: 'flex',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
-  } as React.CSSProperties,
-  logoSlot: {
-    width: '24mm',
-    minWidth: '24mm',
-    height: '24mm',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  } as React.CSSProperties,
-  logoImg: {
-    maxWidth: '24mm',
-    maxHeight: '24mm',
-    objectFit: 'contain' as const,
-  } as React.CSSProperties,
-  logoPlaceholder: (color: string) =>
-    ({
-      width: '24mm',
-      height: '24mm',
-      border: `1px dashed ${color}`,
-      color,
-      fontSize: 9,
-      letterSpacing: 1,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontWeight: 600,
-    }) as React.CSSProperties,
-  brandCenter: {
-    flex: 1,
-    textAlign: 'center' as const,
-    paddingTop: 2,
-  } as React.CSSProperties,
-  instName: (color: string) =>
-    ({
-      fontSize: 18,
-      fontWeight: 700,
-      color,
-      letterSpacing: 0.6,
-      lineHeight: 1.1,
-    }) as React.CSSProperties,
-  tagline: {
-    fontSize: 11,
-    fontStyle: 'italic' as const,
-    color: COLOR_MUTED,
-    marginTop: 2,
-  } as React.CSSProperties,
-  rollStub: (color: string) =>
-    ({
-      width: '32mm',
-      minWidth: '32mm',
-      border: `1px solid ${color}`,
-      fontSize: 9,
-      color: COLOR_TEXT,
-    }) as React.CSSProperties,
-  rollRow: {
-    padding: '4px 6px',
-    minHeight: '8mm',
-  } as React.CSSProperties,
-  brandDivider: (color: string) =>
-    ({
-      borderTop: `2px solid ${color}`,
-      margin: '6px 0 10px',
-    }) as React.CSSProperties,
-  metaRow: {
-    display: 'grid',
-    gridTemplateColumns: '1fr 1fr 1fr',
-    columnGap: 12,
-    fontSize: 11,
-    marginBottom: 4,
-  } as React.CSSProperties,
-  metaLeft: { textAlign: 'left' as const } as React.CSSProperties,
-  metaCenter: { textAlign: 'center' as const } as React.CSSProperties,
-  metaRight: { textAlign: 'right' as const } as React.CSSProperties,
-  title: (color: string) =>
-    ({
-      textAlign: 'center' as const,
-      fontSize: 14,
-      fontWeight: 700,
-      margin: '8px 0 0',
-      textTransform: 'uppercase' as const,
-      letterSpacing: 0.6,
-      paddingBottom: 4,
-      borderBottom: `1px solid ${color}`,
-      width: 'fit-content',
-      marginLeft: 'auto',
-      marginRight: 'auto',
-    }) as React.CSSProperties,
-  instructionsBox: (color: string) =>
-    ({
-      borderLeft: `3px solid ${color}`,
-      background: tintedFromBrand(color),
-      padding: '6px 10px',
-      margin: '10px 0',
-      fontSize: 11,
-    }) as React.CSSProperties,
-  instructionsTitle: (color: string) =>
-    ({
-      fontSize: 10,
-      fontWeight: 700,
-      textTransform: 'uppercase' as const,
-      letterSpacing: 0.4,
-      color,
-      marginBottom: 2,
-    }) as React.CSSProperties,
-  sectionWrap: {
-    margin: '14px 0 6px',
-    textAlign: 'center' as const,
-  } as React.CSSProperties,
-  sectionRule: (color: string) =>
-    ({
-      borderTop: `1px solid ${color}`,
-      margin: '0 0 4px',
-    }) as React.CSSProperties,
-  sectionBar: (color: string) =>
-    ({
-      display: 'inline-block',
-      background: color,
-      color: '#fff',
-      padding: '3px 14px',
-      fontSize: 12,
-      fontWeight: 700,
-      textTransform: 'uppercase' as const,
-      letterSpacing: 0.8,
-    }) as React.CSSProperties,
-  sectionBlueprint: {
-    fontSize: 10,
-    color: COLOR_MUTED,
-    marginTop: 3,
-    fontStyle: 'italic' as const,
-  } as React.CSSProperties,
-  question: {
-    marginTop: 8,
-    pageBreakInside: 'avoid',
-  } as React.CSSProperties,
-  qHead: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'baseline',
-    gap: 8,
-  } as React.CSSProperties,
-  qNumber: {
-    fontWeight: 700,
-    minWidth: '11mm',
-    fontFamily: "'Courier New', 'Liberation Mono', monospace",
-    fontSize: 11.5,
-  } as React.CSSProperties,
-  qMarks: {
-    fontSize: 10,
-    color: COLOR_MUTED,
-    whiteSpace: 'nowrap' as const,
-  } as React.CSSProperties,
-  qBodyWrap: {
-    flex: 1,
-    paddingLeft: 2,
-  } as React.CSSProperties,
-  optionsGrid: {
-    display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
-    columnGap: 16,
-    rowGap: 2,
-    marginLeft: '11mm',
-    marginTop: 4,
-  } as React.CSSProperties,
-  option: { fontSize: 12 } as React.CSSProperties,
-  answerLine: {
-    borderBottom: `1px dotted ${COLOR_LINE}`,
-    height: 18,
-    marginTop: 5,
-    marginLeft: '11mm',
-  } as React.CSSProperties,
-}
+const DEFAULT_INSTRUCTIONS = [
+  'All questions are compulsory.',
+  'Read each question carefully before answering.',
+  'Write answers in the space provided; use the rough sheet for working.',
+  'Calculators are not allowed unless explicitly stated.',
+  'Marks for each question are indicated on the right.',
+]
 
-function HeaderBlock({ branding, accent }: { branding: Branding; accent: string }) {
-  return (
-    <>
-      <div style={styles.headerRow}>
-        <div style={styles.logoSlot}>
-          {branding.logo_url ? (
-            <img src={branding.logo_url} alt="logo" style={styles.logoImg} />
-          ) : (
-            <div style={styles.logoPlaceholder(accent)}>LOGO</div>
-          )}
-        </div>
-        <div style={styles.brandCenter}>
-          <div style={styles.instName(accent)}>{branding.inst_name}</div>
-          {branding.tagline ? <div style={styles.tagline}>{branding.tagline}</div> : null}
-        </div>
-        <div style={styles.rollStub(accent)}>
-          <div style={{ ...styles.rollRow, borderBottom: `1px solid ${accent}` }}>
-            <strong>Roll No.</strong>
-          </div>
-          <div style={styles.rollRow}>
-            <strong>Name</strong>
-          </div>
-        </div>
-      </div>
-      <div style={styles.brandDivider(accent)} />
-    </>
-  )
-}
-
-function MetaBlock({ meta, accent }: { meta: PaperMeta; accent: string }) {
-  const examLabel = examTypeLabel(meta.exam_type)
-  const centerBits: string[] = []
-  if (meta.subject) centerBits.push(`Subject: ${meta.subject}`)
-  if (examLabel) centerBits.push(`Exam: ${examLabel}`)
-  return (
-    <>
-      <div style={styles.metaRow}>
-        <div style={styles.metaLeft}>
-          {meta.course_name ? <span><strong>Course:</strong> {meta.course_name}</span> : null}
-        </div>
-        <div style={styles.metaCenter}>
-          {centerBits.length > 0 ? <span>{centerBits.join(' · ')}</span> : null}
-        </div>
-        <div style={styles.metaRight}>
-          <strong>Duration:</strong> {meta.duration_minutes} min
-          {' · '}
-          <strong>Max Marks:</strong> {meta.total_marks}
-        </div>
-      </div>
-      <div style={styles.title(accent)}>{meta.title || 'Untitled Test'}</div>
-    </>
-  )
-}
-
-function QuestionRow({ index, row }: { index: number; row: PaperRow }) {
-  const q = row.question
-  const marks = row.marks_override ?? q.marks_correct
-  const marksNum = Number(marks) || 0
-  const isMcq = q.question_type === 'mcq' || q.question_type === 'multi_select'
-  const lines = answerLineCount(q.question_type, marksNum)
-
-  return (
-    <div style={styles.question}>
-      <div style={styles.qHead}>
-        <div style={{ display: 'flex', flex: 1, gap: 4 }}>
-          <span style={styles.qNumber}>Q{index}.</span>
-          <span
-            style={styles.qBodyWrap}
-            dangerouslySetInnerHTML={{ __html: renderBodyWithImages(q.question_body) }}
-          />
-        </div>
-        <span style={styles.qMarks}>[{String(marks)}]</span>
-      </div>
-      {isMcq ? (
-        <div style={styles.optionsGrid}>
-          {OPTION_LETTERS.map((letter) => {
-            const value = (q as Record<string, unknown>)[
-              `option_${letter.toLowerCase()}`
-            ]
-            if (typeof value !== 'string' || !value) return null
-            return (
-              <div key={letter} style={styles.option}>
-                <strong>({letter})</strong>{' '}
-                <span dangerouslySetInnerHTML={{ __html: renderKatex(value) }} />
-              </div>
-            )
-          })}
-        </div>
-      ) : (
-        Array.from({ length: lines }).map((_, i) => (
-          <div key={i} style={styles.answerLine} />
-        ))
-      )}
-    </div>
-  )
+function parseInstructions(raw: string | null | undefined): string[] {
+  if (!raw) return DEFAULT_INSTRUCTIONS
+  const lines = raw
+    .split(/\r?\n|•|·/u)
+    .map((l) => l.replace(/^[\s\d.)\-]+/, '').trim())
+    .filter(Boolean)
+  return lines.length > 0 ? lines : DEFAULT_INSTRUCTIONS
 }
 
 export function PaperTemplate({
   meta,
   rows,
   branding,
+  logoSrc = DEFAULT_LOGO_SRC,
 }: {
   meta: PaperMeta
   rows: PaperRow[]
   branding: Branding
+  // Override the logo source. PDF pipeline passes a data URL here so
+  // Puppeteer can render without external fetches.
+  logoSrc?: string
 }) {
-  const accent = brandColor(branding.brand_color_hex)
+  const brand = resolveBrandColor(branding)
   const groups = groupBySection(rows)
+  const markingScheme = buildMarkingScheme(rows)
+  const instructions = parseInstructions(meta.instructions)
+  const effectiveLogo = branding.logo_url || logoSrc
+
+  const boardLine =
+    meta.board_label?.trim() ||
+    (meta.course_name ? `${meta.course_name} (Standard)` : null)
 
   return (
-    <div style={styles.page}>
-      <HeaderBlock branding={branding} accent={accent} />
-      <MetaBlock meta={meta} accent={accent} />
+    <div
+      style={{
+        fontFamily: "'Georgia', 'Liberation Serif', serif",
+        color: COLOR_TEXT,
+        fontSize: 11,
+        lineHeight: 1.4,
+      }}
+    >
+      {/* Header: logo + inst name + tagline */}
+      <header
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 16,
+          paddingBottom: 8,
+          borderBottom: `1px solid ${BRAND_RED}`,
+        }}
+      >
+        <div style={{ width: 110, flexShrink: 0 }}>
+          {effectiveLogo ? (
+            <img
+              src={effectiveLogo}
+              alt="logo"
+              style={{ width: 110, height: 'auto', display: 'block' }}
+            />
+          ) : (
+            <div
+              style={{
+                width: 110,
+                height: 60,
+                border: `1px dashed ${brand}`,
+                color: brand,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: 1.2,
+              }}
+            >
+              LOGO
+            </div>
+          )}
+        </div>
+        <div style={{ flex: 1, textAlign: 'center' }}>
+          <div
+            style={{
+              fontSize: 22,
+              fontWeight: 700,
+              color: brand,
+              letterSpacing: 0.4,
+              lineHeight: 1.05,
+            }}
+          >
+            {branding.inst_name}
+          </div>
+          {branding.tagline ? (
+            <div
+              style={{
+                fontSize: 11,
+                fontStyle: 'italic',
+                color: COLOR_SUBTLE,
+                marginTop: 2,
+              }}
+            >
+              {branding.tagline}
+            </div>
+          ) : null}
+        </div>
+        <div style={{ width: 110, flexShrink: 0 }} />
+      </header>
 
-      {meta.instructions ? (
-        <div style={styles.instructionsBox(accent)}>
-          <div style={styles.instructionsTitle(accent)}>General Instructions</div>
-          <div style={{ whiteSpace: 'pre-wrap' }}>{meta.instructions}</div>
+      {/* Board / standard line */}
+      {boardLine ? (
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 700,
+            color: brand,
+            margin: '10px 0 6px',
+          }}
+        >
+          Board: {boardLine}
         </div>
       ) : null}
 
+      {/* Title */}
+      <h1
+        style={{
+          fontSize: 16,
+          fontWeight: 700,
+          textAlign: 'center',
+          textTransform: 'uppercase',
+          letterSpacing: 0.6,
+          margin: '6px 0 12px',
+          color: COLOR_TEXT,
+        }}
+      >
+        {meta.title || 'Untitled Test'}
+      </h1>
+
+      {/* 3-col meta grid */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '1fr 1fr 1fr',
+          rowGap: 4,
+          columnGap: 16,
+          fontSize: 11,
+          marginBottom: 10,
+        }}
+      >
+        <div>
+          <span style={{ fontWeight: 700, color: brand }}>Time:</span>{' '}
+          {meta.duration_minutes} min
+        </div>
+        <div>
+          <span style={{ fontWeight: 700, color: brand }}>Maximum Marks:</span>{' '}
+          {meta.total_marks}
+        </div>
+        <div>
+          <span style={{ fontWeight: 700, color: brand }}>Topic:</span>{' '}
+          {meta.topic ?? meta.subject ?? '—'}
+        </div>
+      </div>
+
+      {/* Student name + roll no dotted lines */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '2fr 1fr',
+          columnGap: 24,
+          margin: '8px 0 14px',
+          fontSize: 11,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+          <span style={{ fontWeight: 700, color: brand, whiteSpace: 'nowrap' }}>
+            Student Name:
+          </span>
+          <span
+            style={{
+              flex: 1,
+              borderBottom: `1px dotted ${COLOR_SUBTLE}`,
+              height: 14,
+            }}
+          />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+          <span style={{ fontWeight: 700, color: brand, whiteSpace: 'nowrap' }}>
+            Roll No.:
+          </span>
+          <span
+            style={{
+              flex: 1,
+              borderBottom: `1px dotted ${COLOR_SUBTLE}`,
+              height: 14,
+            }}
+          />
+        </div>
+      </div>
+
+      {/* General Instructions */}
+      <section
+        style={{
+          background: tintedFromBrand(brand),
+          borderLeft: `3px solid ${brand}`,
+          padding: '8px 12px',
+          margin: '8px 0 12px',
+        }}
+      >
+        <div
+          style={{
+            fontWeight: 700,
+            color: brand,
+            fontSize: 11,
+            textTransform: 'uppercase',
+            letterSpacing: 0.4,
+            marginBottom: 4,
+          }}
+        >
+          General Instructions
+        </div>
+        <ol
+          style={{
+            margin: 0,
+            paddingLeft: 18,
+            fontSize: 10.5,
+            color: COLOR_TEXT,
+          }}
+        >
+          {instructions.map((line, i) => (
+            <li key={i} style={{ marginBottom: 2 }}>
+              {line}
+            </li>
+          ))}
+        </ol>
+      </section>
+
+      {/* Marking Scheme table */}
+      {markingScheme.length > 0 && (
+        <section style={{ margin: '6px 0 12px' }}>
+          <div
+            style={{
+              fontWeight: 700,
+              fontSize: 11,
+              color: brand,
+              textTransform: 'uppercase',
+              letterSpacing: 0.4,
+              marginBottom: 4,
+            }}
+          >
+            Marking Scheme
+          </div>
+          <table
+            style={{
+              width: '100%',
+              borderCollapse: 'collapse',
+              fontSize: 10.5,
+              border: `1px solid ${COLOR_HAIRLINE}`,
+            }}
+          >
+            <thead>
+              <tr style={{ background: tintedFromBrand(brand) }}>
+                {[
+                  'Section',
+                  'Marks / Question',
+                  '# of Questions',
+                  'Total Marks',
+                  'Marks Obtained',
+                ].map((h) => (
+                  <th
+                    key={h}
+                    style={{
+                      border: `1px solid ${COLOR_HAIRLINE}`,
+                      padding: '4px 8px',
+                      textAlign: 'left',
+                      color: brand,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {markingScheme.map((r, i) => (
+                <tr key={i}>
+                  <td style={tdStyle}>{r.section}</td>
+                  <td style={tdStyle}>{r.marksPerQuestion}</td>
+                  <td style={tdStyle}>{r.numQuestions}</td>
+                  <td style={tdStyle}>{r.total}</td>
+                  <td style={{ ...tdStyle, minWidth: 70 }} />
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+
+      {/* Sections + questions */}
       {groups.length === 0 ? (
         <div
           style={{
-            border: `1px dashed ${COLOR_LINE}`,
+            border: `1px dashed ${COLOR_HAIRLINE}`,
             padding: 24,
             textAlign: 'center',
-            color: COLOR_MUTED,
+            color: COLOR_SUBTLE,
             marginTop: 12,
           }}
         >
@@ -513,23 +523,129 @@ export function PaperTemplate({
             groups.slice(0, gi).reduce((acc, g) => acc + g.rows.length, 0) + 1
           return (
             <section key={gi}>
-              {group.label ? (
-                <div style={styles.sectionWrap}>
-                  <div style={styles.sectionRule(accent)} />
-                  <div style={styles.sectionBar(accent)}>{group.label}</div>
-                  <div style={styles.sectionRule(accent)} />
-                  <div style={styles.sectionBlueprint}>
-                    {sectionBlueprintSummary(group.rows, startIndex)}
-                  </div>
-                </div>
-              ) : null}
+              <SectionBar brand={brand} label={group.label ?? `Section ${String.fromCharCode(65 + gi)}`} />
               {group.rows.map((row, ri) => (
-                <QuestionRow key={row.id} index={startIndex + ri} row={row} />
+                <QuestionRow
+                  key={row.id}
+                  index={startIndex + ri}
+                  row={row}
+                  brand={brand}
+                />
               ))}
             </section>
           )
         })
       )}
+    </div>
+  )
+}
+
+const tdStyle: React.CSSProperties = {
+  border: `1px solid ${COLOR_HAIRLINE}`,
+  padding: '4px 8px',
+  textAlign: 'left',
+  color: COLOR_TEXT,
+}
+
+function SectionBar({ brand, label }: { brand: string; label: string }) {
+  return (
+    <div
+      style={{
+        background: brand,
+        color: '#fff',
+        padding: '5px 12px',
+        marginTop: 14,
+        marginBottom: 6,
+        fontWeight: 700,
+        fontSize: 12,
+        letterSpacing: 0.6,
+        textTransform: 'uppercase',
+        textAlign: 'center',
+      }}
+    >
+      {label}
+    </div>
+  )
+}
+
+function QuestionRow({ index, row, brand }: { index: number; row: PaperRow; brand: string }) {
+  const q = row.question
+  const marks = row.marks_override ?? q.marks_correct
+  const marksNum = Number(marks) || 0
+  const isMcq = q.question_type === 'mcq' || q.question_type === 'multi_select'
+  const lines = answerLineCount(q.question_type, marksNum)
+
+  return (
+    <div
+      style={{
+        marginBottom: 12,
+        pageBreakInside: 'avoid',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 4 }}>
+        <span style={{ fontWeight: 700, minWidth: 26, flexShrink: 0 }}>Q{index}.</span>
+        <span
+          style={{ flex: 1 }}
+          dangerouslySetInnerHTML={{ __html: renderBodyWithImages(q.question_body) }}
+        />
+      </div>
+      {isMcq ? (
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            columnGap: 32,
+            rowGap: 4,
+            marginLeft: 28,
+            marginTop: 4,
+            fontSize: 11,
+          }}
+        >
+          {OPTION_LETTERS.map((letter) => {
+            const value = (q as Record<string, unknown>)[
+              `option_${letter.toLowerCase()}`
+            ]
+            if (typeof value !== 'string' || !value) return null
+            return (
+              <div key={letter}>
+                <strong>({letter})</strong>{' '}
+                <span dangerouslySetInnerHTML={{ __html: renderKatex(value) }} />
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        <div style={{ marginLeft: 28, marginTop: 4 }}>
+          {Array.from({ length: lines }).map((_, i) => (
+            <div
+              key={i}
+              style={{
+                borderBottom: `1px dotted ${COLOR_HAIRLINE}`,
+                height: 18,
+                marginTop: 4,
+              }}
+            />
+          ))}
+        </div>
+      )}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 2 }}>
+        <span
+          style={{
+            display: 'inline-block',
+            border: `1px solid ${BRAND_RED}`,
+            color: BRAND_RED,
+            borderRadius: 999,
+            padding: '0 8px',
+            fontSize: 10,
+            fontWeight: 700,
+          }}
+        >
+          [ {String(marks)} ]
+        </span>
+      </div>
+      {/* Reference to brand so a future option can colour something with it
+          (e.g. a hover state in the React preview) without re-plumbing. */}
+      <span style={{ display: 'none' }} data-brand={brand} />
     </div>
   )
 }
