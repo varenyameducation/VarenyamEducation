@@ -57,7 +57,10 @@ const mcqSchema = z.object({
   option_b: z.string().min(1),
   option_c: z.string().min(1),
   option_d: z.string().min(1),
-  correct_option: z.array(optionLetterSchema).length(1),
+  // Allow [] for bulk-imported MCQs that ship unverified — user marks the
+  // correct answer in the question bank after review. `.length(1)` would
+  // reject those rows wholesale.
+  correct_option: z.array(optionLetterSchema).max(1).default([]),
 })
 
 const multiSelectSchema = z.object({
