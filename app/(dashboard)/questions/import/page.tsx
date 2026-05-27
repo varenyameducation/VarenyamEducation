@@ -34,6 +34,10 @@ interface ImportResult {
   total_tokens?: number
   vision_images_processed?: number
   vision_images_replaced?: number
+  vision_text_used?: boolean
+  vision_text_tokens?: number
+  vision_text_images_attached?: number
+  vision_text_error?: { code: string; message: string } | null
   errors: ImportError[]
   note?: string
   header?: { topic?: string | null; time_minutes?: number | null; total_marks?: number | null }
@@ -316,7 +320,7 @@ export default function ImportQuestionsPage() {
                 ) : isPdf ? (
                   'Renders each page through Gemini Vision so 2D math notation (fractions, integrals, exponents) comes through as proper LaTeX. ~5 seconds per page; uses Gemini free-tier quota.'
                 ) : isDocx ? (
-                  'Scans every image embedded in your Word document with Gemini Vision. Pasted equation screenshots get replaced with rendered LaTeX; actual diagrams stay as images. ~3 seconds per image.'
+                  'Sends the document text to Gemini to reconstruct questions and convert flattened math back to proper LaTeX (works for Word files that were converted from PDFs). Also scans any pasted equation screenshots inside the file. ~15–45 seconds total.'
                 ) : (
                   <span className="font-medium">
                     PDF or Word only — current file is .{kind === 'unknown' ? '?' : kind}.
@@ -518,7 +522,7 @@ export default function ImportQuestionsPage() {
                   : visionActive && isPdf
                     ? 'Importing via Gemini Vision (this may take 1–5 minutes for multi-page PDFs)…'
                     : visionActive && isDocx
-                      ? 'Scanning embedded images with Gemini Vision (~3 seconds per image)…'
+                      ? 'Reconstructing questions with Gemini (re-LaTeX flattened math + scan embedded images, ~15–45 seconds)…'
                       : 'Parsing your document…'}
               </p>
             </div>
@@ -599,6 +603,33 @@ export default function ImportQuestionsPage() {
                   : ''}
               </p>
             )}
+
+          {result.vision_text_used && (
+            <p className="font-mono text-xs text-muted-foreground">
+              DOCX reconstructed via Gemini Vision
+              {typeof result.vision_text_images_attached === 'number' &&
+              result.vision_text_images_attached > 0
+                ? ` · ${result.vision_text_images_attached} embedded image${result.vision_text_images_attached === 1 ? '' : 's'} read inline`
+                : ''}
+              {typeof result.vision_text_tokens === 'number'
+                ? ` · ~${result.vision_text_tokens.toLocaleString()} tokens`
+                : ''}
+            </p>
+          )}
+
+          {!result.vision_text_used && result.vision_text_error && (
+            <p className="flex items-start gap-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                Gemini text reconstruction failed
+                {' ('}
+                <code className="font-mono">{result.vision_text_error.code}</code>
+                {'): '}
+                {result.vision_text_error.message}
+                {' '}— fell back to the heuristic parser, which is what produced this output. If this is a math-heavy DOCX, retry in a few seconds (free-tier quota is 15 req/min) or upload the original PDF instead.
+              </span>
+            </p>
+          )}
 
           {result.header && (result.header.topic || result.header.total_marks) ? (
             <p className="text-xs text-muted-foreground">

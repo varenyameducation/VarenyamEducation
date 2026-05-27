@@ -21,6 +21,7 @@ import {
 } from '@/lib/integrations/document/parse-questions-text'
 import { normalizeMathToLatex } from '@/lib/integrations/document/normalize-math-to-latex'
 import { parseQuestionsFromImage } from '@/lib/integrations/ai/parse-questions-from-image'
+import { parseQuestionsFromDocxText } from '@/lib/integrations/ai/parse-questions-from-docx-text'
 import { GeminiError } from '@/lib/integrations/ai/gemini'
 import {
   extractLatexFromImage,
@@ -246,7 +247,51 @@ async function handleDocumentImport(
     }
   }
 
-  const parsed = parseQuestionsFromParagraphs(paragraphs)
+  let parsed = parseQuestionsFromParagraphs(paragraphs)
+  let visionTextUsed = false
+  let visionTextTokens = 0
+  let visionTextError: { code: string; message: string } | null = null
+
+  // Opt-in Gemini text reconstruction for DOCX. The heuristic can't recover
+  // documents that lost question markers and got their math flattened
+  // (typical of PDF→Word conversions). When the user ticks Vision on a
+  // DOCX, send the raw paragraphs to Gemini Flash with a re-LaTeX prompt
+  // and use its reconstructed questions instead of the heuristic's. If
+  // Gemini fails (rate limit, parse error, network), we fall back to the
+  // heuristic output we already have — so the flag never makes the import
+  // worse than the default path — but the failure reason is surfaced in
+  // the response envelope so the user knows why their import looks like
+  // the old heuristic output.
+  const useVisionTextForDocx = kind === 'docx' && form.get('vision') === 'true'
+  let visionTextImagesAttached = 0
+  if (useVisionTextForDocx) {
+    try {
+      const visionResult = await parseQuestionsFromDocxText(paragraphs, docxImages)
+      visionTextTokens = visionResult.usage.totalTokens
+      visionTextImagesAttached = visionResult.imagesAttached
+      if (visionResult.parsed.length > 0) {
+        parsed = {
+          header: parsed.header,
+          questions: visionResult.parsed,
+          errors: [],
+        }
+        visionTextUsed = true
+      } else {
+        visionTextError = {
+          code: 'EMPTY_RESPONSE',
+          message:
+            'Gemini returned zero questions from the DOCX text — falling back to heuristic parse.',
+        }
+      }
+    } catch (e) {
+      const code = e instanceof GeminiError ? e.code : 'UNKNOWN'
+      const msg = e instanceof Error ? e.message : 'unknown error'
+      visionTextError = { code, message: msg }
+      console.warn(
+        `[import] DOCX vision-text reconstruction failed (${code}): ${msg} — falling back to heuristic`,
+      )
+    }
+  }
 
   const errors: ImportError[] = [
     ...imageUploadErrors,
@@ -277,7 +322,12 @@ async function handleDocumentImport(
   let visionImagesProcessed = 0
   let visionImagesReplaced = 0
   const useVision = form.get('vision') === 'true'
-  if (kind === 'docx' && useVision && docxImages.length > 0) {
+  // Skip the per-image LaTeX pass when the multimodal text path already
+  // saw the images inline — Gemini either inlined the math into the
+  // reconstructed question_body OR deliberately kept the [[IMG:...]]
+  // marker because the image is a non-math diagram. Re-running per-image
+  // Vision would burn tokens and risk over-LaTeX-ing real diagrams.
+  if (kind === 'docx' && useVision && !visionTextUsed && docxImages.length > 0) {
     const referencedFilenames = new Set<string>()
     const placeholderRe = /\[\[IMG:([^\]]+)\]\]/g
     for (const q of parsed.questions) {
@@ -458,6 +508,10 @@ async function handleDocumentImport(
       detected_topic: parsed.header.topic ?? null,
       vision_images_processed: visionImagesProcessed,
       vision_images_replaced: visionImagesReplaced,
+      vision_text_used: visionTextUsed,
+      vision_text_tokens: visionTextTokens,
+      vision_text_images_attached: visionTextImagesAttached,
+      vision_text_error: visionTextError?.code ?? null,
     },
     ip_address: getClientIp(request),
   })
@@ -470,6 +524,10 @@ async function handleDocumentImport(
     header: parsed.header,
     vision_images_processed: visionImagesProcessed,
     vision_images_replaced: visionImagesReplaced,
+    vision_text_used: visionTextUsed,
+    vision_text_tokens: visionTextTokens,
+    vision_text_images_attached: visionTextImagesAttached,
+    vision_text_error: visionTextError,
     note:
       'MCQs imported without a correct answer marked — review each question in the Question Bank to set the actual answer. is_verified = false on all imports.',
   })
