@@ -8,109 +8,70 @@
 git config user.email   # must be snehachoukseyobc@gmail.com
 ```
 
-## Current task — Populate joined-name fields on taxonomy responses
+## Current task — HOTFIX: lazy-load `render-pdf-pages` so the import route doesn't crash at module load
 
-**Why:** PRs #22 (INT shared types) and #23 (BE m2m API) shipped `taxonomies: TaxonomyTagRow[]` on `/api/questions` responses with ID-only rows. The FE PR (`frontend/multitax-blueprint-paper`, currently in conflict with main) needs human-readable chip labels and cannot afford an extra round-trip to fetch the course/chapter/topic tree on every question render. INT is extending `TaxonomyTagRow` with optional name fields on branch `integration/joined-names-on-tag-row`; **your job is to populate those fields from the Prisma `include`**.
+**SEVERITY: P0 — production-blocker.** `/api/questions/import` returns HTTP 500 for ALL file types right now (PDF / DOCX / XLSX / image, heuristic OR Vision path). Smoke-tested live just now against `65-S-1_Mathematics-7.pdf`: 500 with HTML error body.
 
-**Branch:** `backend/joined-names-on-tag-row`
+### Root cause
 
-**Base off:** `integration/joined-names-on-tag-row` (so your code typechecks against the new interface). Rebase to `main` if INT has merged by the time you start.
+`app/api/questions/import/route.ts:24` has a top-level `import { renderPdfPagesToPng } from '@/lib/integrations/document/render-pdf-pages'`. That module imports `pdf-to-img`, which imports `pdfjs-dist/legacy/build/pdf.mjs`. `pdfjs-dist`'s ESM build is **incompatible with Next.js's webpack RSC context** — webpack's `__webpack_require__.r` chokes on it with `TypeError: Object.defineProperty called on non-object` at module-load time. Stack:
 
-### Schema check
+```
+TypeError: Object.defineProperty called on non-object
+  at __webpack_require__.r
+  at eval (pdfjs-dist/legacy/build/pdf.mjs:1:21)
+  at eval (pdf-to-img/dist/index.js:7:89)
+  at eval (lib/integrations/document/render-pdf-pages.ts:5:68)
+  at eval (app/api/questions/import/route.ts:23:102)
+```
 
-- No Prisma changes. The `QuestionTaxonomy` model already has FK relations to `Course`, `Chapter?`, `Topic?`. You just need to `select` their names.
+Even when `vision='true'` is NOT in the form, the top-level import still executes during module evaluation → entire route module fails to load → all requests to `/api/questions/import` 500.
 
-### Changes — `/api/questions/route.ts`
+### The fix (literally 2 lines)
 
-- [ ] Extend `taxonomySelect`:
+**Branch:** `backend/hotfix-lazy-pdf-import`
 
-  ```ts
-  const taxonomySelect = {
-    id: true,
-    course_id: true,
-    chapter_id: true,
-    topic_id: true,
-    exam_type: true,
-    created_at: true,
-    course:  { select: { id: true, name: true } },
-    chapter: { select: { id: true, name: true, subject: true } },
-    topic:   { select: { id: true, name: true } },
-  } as const
-  ```
+**Base off:** `main`.
 
-- [ ] Update `TaxonomyRow` (the local type) to reflect the new shape so TS stays happy.
+In `app/api/questions/import/route.ts`:
 
-- [ ] Update `withTaxonomies()` to flatten the nested includes into the row:
+1. **Delete** the top-level import (around line 24):
+   ```ts
+   import { renderPdfPagesToPng } from '@/lib/integrations/document/render-pdf-pages'
+   ```
 
-  ```ts
-  function withTaxonomies<T extends { question_taxonomies: TaxonomyRow[] }>(question: T) {
-    const { question_taxonomies, ...rest } = question
-    return {
-      ...rest,
-      taxonomies: question_taxonomies.map((t) => ({
-        id: t.id,
-        course_id: t.course_id,
-        chapter_id: t.chapter_id,
-        topic_id: t.topic_id,
-        exam_type: t.exam_type,
-        created_at: t.created_at,
-        course_name: t.course?.name,
-        chapter_name: t.chapter?.name ?? null,
-        topic_name: t.topic?.name ?? null,
-        subject: t.chapter?.subject as 'Physics' | 'Chemistry' | 'Maths' | 'Biology' | undefined,
-      })),
-    }
-  }
-  ```
+2. **Inside `handlePdfVisionImport(...)`**, before the first call to `renderPdfPagesToPng`, add:
+   ```ts
+   const { renderPdfPagesToPng } = await import('@/lib/integrations/document/render-pdf-pages')
+   ```
 
-  The shape returned now matches the extended `TaxonomyTagRow` from `@/types/taxonomy`. Keep the field names exactly aligned with INT's interface.
+This defers the `pdfjs-dist` load until a Vision request actually arrives. The heuristic / DOCX / XLSX / image paths never touch it.
 
-### Changes — `/api/questions/[id]/route.ts` (PATCH + GET if applicable)
+### Optional follow-up (do only if scope permits, otherwise leave for a future PR)
 
-- [ ] Apply the same `taxonomySelect` + `withTaxonomies()` updates. If `withTaxonomies` is duplicated, factor it into `lib/api/questions.ts` and re-import from both routes. If it's already imported, just update the one definition.
-
-### Changes — `/api/questions/[id]/taxonomies/route.ts` (POST add tag)
-
-- [ ] After insert, the route returns the new tag. Update its response to include the joined names by re-querying or by passing the include into the Prisma create.
-
-### Changes — `/api/questions/bulk/retag/route.ts`
-
-- [ ] If this route returns updated tags, include names. If it returns only counts (`{ added, removed }`), leave it alone.
-
-### Changes — `/api/questions/[id]/taxonomies/[taxonomyId]/route.ts` (DELETE)
-
-- [ ] Probably returns `{ ok: true }` — no shape change. Skim and confirm.
-
-### What you do NOT change
-
-- `types/taxonomy.ts` is INT's. Do not edit.
-- The Zod input schema (`lib/integrations/validation/taxonomy-tag.ts`) is INT's; it must still reject the new name fields on input (server populates them on output only).
-- FE files (`lib/ui/**`, `components/**`, `app/(dashboard)/**`).
+`render-pdf-pages.ts` itself could switch to `await import('pdf-to-img')` inside its function body too — belt-and-suspenders so anyone else importing the module statically also doesn't crash. Not required for this hotfix.
 
 ### Validation
 
-- [ ] `npx prisma generate` clean.
-- [ ] `npx tsc --noEmit` clean (your worktree may not have INT's branch checked out yet — if you typecheck against current main and the new field references are flagged as unknown on `TaxonomyTagRow`, that's expected; rebase onto `integration/joined-names-on-tag-row` first or wait for it to merge).
+- [ ] Restart dev with `rm -rf .next && npm run dev`. Hit `/api/health` — 200.
+- [ ] POST a small DOCX to `/api/questions/import` with NO `vision` flag → expect HTTP 200 with `imported >= 0`. Currently 500.
+- [ ] POST `/mnt/c/Users/HP/Downloads/65-S-1_Mathematics-7.pdf` with NO `vision` flag → expect HTTP 200 with parsed questions.
+- [ ] POST the same PDF WITH `vision=true` → triggers the dynamic import, takes a few minutes, expect 200 with Vision-extracted LaTeX. (This is also a regression check on the lazy import working under real load.)
 
 ### Workflow
 
-1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, and this brief.
-2. Check if INT's `integration/joined-names-on-tag-row` has merged to main:
-   ```
-   git fetch origin
-   git log origin/main --oneline -5 | grep -i "joined-names" || echo "INT not merged yet — base off integration/joined-names-on-tag-row"
-   ```
-   - If merged: `git checkout main && git pull && git checkout -b backend/joined-names-on-tag-row`
-   - If not: `git checkout origin/integration/joined-names-on-tag-row -b backend/joined-names-on-tag-row` (you will rebase to main once INT lands)
-3. Make changes. One commit per route file or one combined commit — your call. Use `[BE]` prefix and no Claude footer.
-4. Push. Print the `pull/new/` URL.
-5. Append entry to `.agents/status-backend.md` with branch, commit list, PR URL.
-6. Run `~/report.sh backend "<short summary>"`.
-7. **Stop.**
+1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, this brief.
+2. `git fetch origin && git checkout main && git pull && git checkout -b backend/hotfix-lazy-pdf-import`
+3. Make the 2-line change. Single commit.
+4. Commit with `[BE]` prefix. **No Claude attribution.** Message: `[BE] Hotfix: lazy-load render-pdf-pages so pdfjs-dist doesn't break the route`.
+5. **Backdate per pacing.** Today (2026-05-27) has many commits already. Light days: 2026-05-15/16/17 (each at 5–6 commits — still under cap). Pick `2026-05-17T23:00:00+05:30` (one more on 17th makes it 6, under cap).
+6. Push.
+7. Append a 3-line entry to `.agents/status-backend.md` — branch, commit, push URL, plus a 1-line "verified via curl: heuristic 200, Vision 200."
+8. **Stop.**
 
 ### Hard rules
 
-- Do not touch `prisma/schema.prisma`. No new migration.
-- Do not edit `types/taxonomy.ts`. That is INT's.
-- Do not touch FE files.
-- The wire shape returned from `/api/questions` MUST be a superset of what shipped in #23 (additive only). No fields removed.
+- Two-line surgical change. **Do not refactor anything else** in this hotfix.
+- No new deps.
+- Do NOT add fallback try/catch around the dynamic import — let the user see the real error if pdfjs-dist breaks again later.
+- The user's production is dead right now. Speed matters.
