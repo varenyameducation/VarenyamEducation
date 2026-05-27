@@ -8,11 +8,13 @@ import {
   type Resolver,
 } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
+import { AlertCircle } from 'lucide-react'
 import {
   questionFormSchema,
   questionFormDefaults,
   QUESTION_TYPES,
   DIFFICULTIES,
+  SUBJECTS,
   type QuestionFormValues,
 } from '@/lib/validation/question'
 import type { TaxonomyTag } from '@/types/taxonomy'
@@ -177,7 +179,36 @@ export function QuestionForm({
           />
         </section>
 
-        {/* Difficulty (subject + exam type are derived from the first chip) */}
+        {/* Subject (free-text on the question row; per-tag subject_id lives
+            on each taxonomy chip). Required by both the form schema and the
+            API — surfaced as a visible control so submit can't silently
+            fail on a missing value. */}
+        <section className="space-y-2">
+          <Label htmlFor="subject">Subject</Label>
+          <Controller
+            control={control}
+            name="subject"
+            render={({ field }) => (
+              <select
+                id="subject"
+                value={field.value ?? ''}
+                onChange={(e) => field.onChange(e.target.value)}
+                className="h-10 w-full max-w-xs rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {SUBJECTS.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+            )}
+          />
+          {errors.subject && (
+            <p className="text-sm text-destructive">{errors.subject.message}</p>
+          )}
+        </section>
+
+        {/* Difficulty */}
         <section className="space-y-2">
           <Label>Difficulty</Label>
           <div className="flex flex-wrap gap-2">
@@ -296,10 +327,30 @@ export function QuestionForm({
           </div>
         </section>
 
-        <div className="flex items-center justify-end gap-3 border-t pt-4">
-          <Button type="submit" disabled={isSubmitting}>
-            {submitLabel ?? (mode === 'create' ? 'Create question' : 'Save changes')}
-          </Button>
+        <div className="space-y-3 border-t pt-4">
+          {Object.keys(errors).length > 0 && (
+            <div
+              role="alert"
+              className="flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            >
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>
+                Please fix the highlighted field
+                {Object.keys(errors).length === 1 ? '' : 's'} before submitting:{' '}
+                <span className="font-medium">
+                  {Object.keys(errors)
+                    .map((k) => k.replace(/_/g, ' '))
+                    .join(', ')}
+                </span>
+                .
+              </span>
+            </div>
+          )}
+          <div className="flex items-center justify-end gap-3">
+            <Button type="submit" disabled={isSubmitting}>
+              {submitLabel ?? (mode === 'create' ? 'Create question' : 'Save changes')}
+            </Button>
+          </div>
         </div>
       </form>
     </FormProvider>
