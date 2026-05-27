@@ -2,6 +2,35 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-27 11:30 — integration/multi-question-vision
+- DONE: Multi-question Gemini Vision helper for the bulk PDF/DOCX import sprint. Single-question helper (`parseQuestionFromImage`) untouched and still exported.
+  - `lib/integrations/ai/parse-questions-from-image.ts` — new `parseQuestionsFromImage(buf, mime) -> { parsed: ParsedQuestion[]; usage: { totalTokens: number } }`. Uses the same `geminiGenerateText` wrapper with `responseMimeType: 'application/json'`, default `gemini-2.5-flash`. Prompt asks Gemini to extract ALL questions on the page, convert math to LaTeX (`\\( … \\)` inline / `\\[ … \\]` display), preserve A/B/C/D MCQ option order, and SKIP non-question content (page headers, page numbers like `Page 7 of 23`, paper codes like `65/S/1`, instructions blocks, bare section labels). For a non-question page Gemini returns `{ "questions": [] }` and the helper returns `parsed: []` — that's a valid result, not an error.
+  - Same image constraints as the single helper: mime allow-list (`image/png` | `image/jpeg` | `image/webp`) + 5 MiB cap, both enforced before the network call (saves a token-burn on rejection).
+  - Zod failure on Gemini output surfaces as `GeminiError('BAD_RESPONSE')` carrying the first 500 chars of the raw text — actionable when Gemini hallucinates malformed JSON. MCQ option-count mismatch is a per-question `console.warn`, not a throw, so a 5-question page with one weird MCQ still gives BE the other four.
+  - `lib/integrations/ai/index.ts` — adds re-export of `parseQuestionsFromImage`, `parsedQuestionSchema`, `parsedQuestionsResponseSchema`, `ParsedQuestion`, `ParseQuestionsMime`. The existing `parseQuestionFromImage` / `parsedQuestionImageSchema` / `ParsedQuestionImage` / `ParsedQuestionImageMime` exports are left as-is. **The two helpers coexist** — single is for `/questions/new` upload (one image → one question); multi is for `/api/questions/import` (one page → 0..N questions).
+  - `scripts/test-gemini-multi.mjs` — sibling wire smoke (`npx tsx scripts/test-gemini-multi.mjs [path]`, defaults to `public/brand/varenyam-logo-mark.png`). Verified locally against the real key: logo PNG round-trips as `parsed: []` with `totalTokens: 668` — wire is healthy, Zod accepts the empty-array response, no auth/network error.
+- Commit:
+  - `10bac12` [INT] Multi-question Gemini Vision helper (backdated `2026-05-18T19:00:00+05:30` per pacing cap — 2026-05-18 had 2 commits before, still well under 7).
+- PR: pending — branch pushed to `origin/integration/multi-question-vision`. No `gh` CLI on this machine. Orchestrator/admin to open via https://github.com/varenyameducation/VarenyamEducation/pull/new/integration/multi-question-vision
+- BLOCKED ON: none.
+- NOTES — Contract for BE (`backend/bulk-import-vision` or whatever the consuming branch is):
+  - Import surface (use the barrel `@/lib/integrations/ai` or the file path directly):
+    - `parseQuestionsFromImage(imageBuffer: Buffer, mimeType: 'image/png' | 'image/jpeg' | 'image/webp'): Promise<{ parsed: ParsedQuestion[]; usage: { totalTokens: number } }>`
+    - `type ParsedQuestion = { question_body: string; question_type: 'mcq' | 'numerical' | 'subjective'; options: string[]; correct_option: Array<'A'|'B'|'C'|'D'> }`
+    - `parsedQuestionSchema` / `parsedQuestionsResponseSchema` — Zod, in case BE wants to re-validate at the route boundary.
+  - Empty-page semantics: a clean `parsed: []` is a **valid** result for header/cover/blank pages and should NOT be treated as an error — just skip and move to the next page. Only a thrown `GeminiError` is an error.
+  - Error → HTTP-status mapping recommendation (identical to the single-question helper; same `GeminiError` codes):
+    - `NO_KEY` → 400 + friendly "bulk image import is disabled until GEMINI_API_KEY is set"
+    - `AUTH_FAIL` → 500 (config error on our side; do not leak the message)
+    - `RATE_LIMIT` → 429 (free tier is 1500 req/day — at 1 req/page that's ~150 30-page PDFs/day; for bulk imports BE should batch or queue)
+    - `TIMEOUT` → 504
+    - `BAD_RESPONSE` → 422 (Gemini hallucinated malformed JSON; the per-page failure should be reported in the import result but not abort the whole batch — keep parsing the rest of the pages)
+    - `NETWORK` → 502
+  - Buffer-vs-Blob: helper takes a Node `Buffer`. PDF-to-image rasterizers usually hand back a Buffer already; if you get a `File`/`Blob`, convert with `Buffer.from(await blob.arrayBuffer())`.
+  - Concurrency: the helper itself is concurrency-safe (no shared mutable state), but Gemini free tier has a per-minute rate limit too. For a 30-page PDF, BE should serialize or `p-limit(3)` rather than `Promise.all` all pages at once.
+  - Cost telemetry: `usage.totalTokens` is per-call. BE may want to sum across pages and surface in the import result so users can see "your 30-page paper used 24,500 tokens".
+- `npx tsc --noEmit` clean for every file in integration scope (`lib/integrations/ai/**`, `scripts/test-gemini-multi.mjs`). Pre-existing errors elsewhere (Prisma client drift in BE routes, missing codemirror deps in FE) are unchanged by this branch.
+
 ## 2026-05-26 19:30 — integration/gemini-image-to-latex
 - DONE: Gemini Vision integration helper for image-to-LaTeX question parsing.
   - `lib/integrations/ai/gemini.ts` — plain `fetch` wrapper around the Google Generative Language v1beta `generateContent` REST endpoint. No SDK dependency. `AbortController` timeout (default 30s). Typed `GeminiError` with codes `NO_KEY | AUTH_FAIL | RATE_LIMIT | TIMEOUT | BAD_RESPONSE | NETWORK`. Reads `process.env.GEMINI_API_KEY` at call time (never logged, never persisted). Default model `gemini-2.5-flash`, default temperature `0.1`. Inline image parts are sent as `inline_data: { mime_type, data: <base64> }`.

@@ -9,3 +9,10 @@ export type {
 
 export { parseQuestionFromImage, parsedQuestionImageSchema } from './parse-question-image'
 export type { ParsedQuestionImage, ParsedQuestionImageMime } from './parse-question-image'
+
+export {
+  parseQuestionsFromImage,
+  parsedQuestionSchema,
+  parsedQuestionsResponseSchema,
+} from './parse-questions-from-image'
+export type { ParsedQuestion, ParseQuestionsMime } from './parse-questions-from-image'

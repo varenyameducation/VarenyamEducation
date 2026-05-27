@@ -2,6 +2,66 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-27 — backend/bulk-import-heuristic (course-corrected from bulk-import-vision)
+
+The PDF-Vision sprint on `backend/bulk-import-vision` is REJECTED per the user. This branch implements the heuristic-normalizer alternative: Gemini API is used only for (a) single-question image upload at `/questions/new` (already shipped) and (b) bulk image uploads at `/api/questions/import`. PDF and DOCX text paths use pure-regex math normalization with zero API cost.
+
+- COMMITS (on `backend/bulk-import-heuristic`, branched off `origin/integration/multi-question-vision` so the new image-upload kind typechecks against INT's `parseQuestionsFromImage` export):
+  - `265fd5e` [BE] Relax Q-prefix regex with monotonicity + body-length guards
+  - `b39d682` [BE] Heuristic math-to-LaTeX normalizer + image upload via Gemini
+- PR: pending (branch pushed to `origin/backend/bulk-import-heuristic`; orchestrator to open the PR — `gh` CLI not on the worker shell). Merge order: INT's `integration/multi-question-vision` first, then this branch; or rebase this onto main once INT lands.
+- BASE: `origin/integration/multi-question-vision` (so `import { parseQuestionsFromImage } from '@/lib/integrations/ai/parse-questions-from-image'` resolves at typecheck time). When INT merges first, this rebases cleanly onto main with zero conflicts.
+
+### Validation
+
+- `npx tsc --noEmit` clean for all new code. Only the two pre-existing unused `@ts-expect-error` warnings in `app/api/tests/[id]/export/{docx,pdf}/route.ts` remain — not from this sprint.
+- Normalizer unit tests: `npx tsx scripts/test-math-normalize.mjs` reports **34 passed, 0 failed** covering symbol substitution, ASCII shortcuts, super/subscripts, fractions, false-positive guards (`http://`, `and/or`, `2/3 of the class`), and idempotency.
+- Regression test against the user's verified-working DOCX `/mnt/c/Users/HP/Downloads/Class 8th_Maths_Question Paper_ Algebra Play_Chapter Test (1).docx`: **14 real questions parsed** (Section A: 7 MCQs; Section B: 2 subjective; Section C: 2; Section D: 1; Section E: 1; Bonus: 1). Zero false-positives from the marking-scheme layout table that lives in the header. The 14 "Question had no body text" parse errors are correctly-rejected empty blocks from the parser drifting through cell-per-paragraph table extraction — they don't pollute the imported set.
+- Heuristic sample against the user's CBSE PDF `/mnt/c/Users/HP/Downloads/65-S-1_Mathematics-7.pdf`: 4 questions extracted; math is partially flattened (expected per user direction — see "Limitations" below). Sample output:
+  ```
+  Q1 (subj, no=3): "dy dx at t = 1 is : (A)"   ← \frac{d^2y}{dx^2} flattened by pdf-parse
+  Q2 (mcq,  no=8): "The area bounded by the parabola x 2 = y and the line y = 1 is"
+       A: "2 3 sq unit"  B: "1 3 sq unit"  C: "4 3 sq units"  D: "2 sq units"
+  Q3 (mcq,  no=9): "If the rate of change of volume of a sphere is twice the rate of change of its radius, then the surface area of the sphere is"
+       A: "1 sq unit"  B: "2 sq units"  C: "3 sq units"  D: "4 sq units"
+  Q4 (mcq,  no=10): " x x3 x cos d is equal to"   ← \int 3cos(√x)/√x dx flattened
+       A: "– 6 sin x + C"  B: "– 6 cos x + C"  C: "6 cos x + C"  D: "6 sin x + C"
+  ```
+  Workflow for the user: re-import garbled questions one at a time via the single-question image upload at `/questions/new`, which uses Gemini and produces clean LaTeX.
+
+### Limitations (document and live with)
+
+- PDF math fidelity: pdf-parse flattens 2D math layout BEFORE the normalizer sees the text. Fractions whose numerator/denominator landed on separate lines collapse to bare numbers ("2 3 sq unit"), integrals lose their dx, super/subscripts that were rendered as small text vanish. The normalizer can't recover what's already gone — it operates on the flattened text. This is a known trade-off; the user accepts it for the zero-API-cost benefit on bulk PDF imports.
+- DOCX is unaffected — DOCX paragraphs preserve structure, so the normalizer's symbol substitution captures `π × r²` → `\(\pi\) \(\times\) \(r^{2}\)` cleanly.
+- Mid-prose `x/y` is NEVER converted to `\frac{x}{y}` by design — it might be a fraction, might be division in a URL or "and/or". The brief is explicit: missed math is reviewable; mis-converted math is invisible damage.
+
+### Contract for FE (frontend/import-revamp scope)
+
+- **Endpoint unchanged**: `POST /api/questions/import` — multipart/form-data, single `file` field, defaults posted alongside (`course_id`, `chapter_id`, `topic_id`, `subject`, `difficulty`, `exam_type`, `marks_default`).
+- **NEW accepted MIME types on `file`**: `image/png`, `image/jpeg`, `image/webp` in addition to the existing `.xlsx` / `.docx` / `.pdf`. Update the input `accept` attribute and the "Only .xlsx, .docx, and .pdf files are accepted" copy. The error envelope for unsupported types is now `400 INVALID_FILE_TYPE` with the message "Only .xlsx, .docx, .pdf, and image files (.png, .jpg, .jpeg, .webp) are accepted".
+- **Image upload response** (HTTP 200):
+  ```ts
+  {
+    success: true,
+    data: {
+      imported: number,
+      mcq_count: number,
+      subjective_count: number,
+      total_tokens: number,
+      errors: Array<{ row: number | null; reason: string }>,
+      note: string,
+    }
+  }
+  ```
+- **DOCX / PDF / XLSX response shapes unchanged** — DOCX/PDF still return `{imported, mcq_count, subjective_count, errors, header, note}`; XLSX still returns `{imported, errors}`. PDF now goes through the same text-extraction path as DOCX (no per-page Gemini calls), so the response time is fast (seconds, not minutes).
+- **Math rendering on the FE**: imported question bodies and MCQ options now consistently use `\( ... \)` for inline math wherever the heuristic detected a math region. KaTeX renderer should already handle this; verify against the Class-8 regression set.
+- **Error codes to special-case on image uploads**:
+  - `400 IMAGE_TOO_LARGE` — over Gemini's 5 MiB cap.
+  - `400 GEMINI_NOT_CONFIGURED` — `GEMINI_API_KEY` missing in server env.
+  - `429 RATE_LIMITED` — show "try again in a few seconds".
+  - `502 GEMINI_FAILED` — show "upstream failed, try again"; `details.code` is the GeminiError code for the debug panel.
+- **Help-text copy update** in `app/(dashboard)/questions/import/page.tsx`: the current "Q1. body [marks]" example is stale post-relaxation. New copy: "1. body [marks]" or "Q1. body [marks]" — both are now accepted by the text parser. Flagging for FE rather than editing it from this branch.
+
 ## 2026-05-26 — backend/parse-image-route
 - DONE: New route `POST /api/questions/parse-image` — multipart upload, single `file` field, ≤ 5 MB, image/png|jpeg|webp. Calls `parseQuestionFromImage()` from `lib/integrations/ai` and maps `GeminiError` codes to envelope codes per the brief. Audit-logs `question.parse_image` on success.
 - COMMIT: `831e5a7` (backdated to 2026-05-21 18:00 IST per pacing rule; light day).
