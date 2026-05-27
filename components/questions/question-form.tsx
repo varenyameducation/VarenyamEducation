@@ -23,6 +23,7 @@ import { LaTeXEditor } from '@/components/ui/latex-editor'
 import { Textarea } from '@/components/ui/textarea'
 import { QuestionTypeFields } from '@/components/questions/question-type-fields'
 import { ImageUploader } from '@/components/questions/image-uploader'
+import { ParseFromImage, type ParsedQuestion } from '@/components/questions/parse-from-image'
 import { TaxonomyTagPicker } from '@/components/questions/taxonomy-tag-picker'
 import { cn } from '@/lib/utils'
 
@@ -52,8 +53,60 @@ export function QuestionForm({
     handleSubmit,
     register,
     control,
+    setValue,
     formState: { errors, isSubmitting },
   } = methods
+
+  const applyParsedQuestion = React.useCallback(
+    (data: ParsedQuestion) => {
+      setValue('question_body', data.question_body, {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+      // Gemini only emits mcq | numerical | subjective; those map 1:1 onto
+      // the form's question_type enum (which also has multi_select +
+      // matrix_match — unreachable from image parse).
+      setValue('question_type', data.question_type, {
+        shouldDirty: true,
+        shouldValidate: true,
+      })
+
+      if (data.question_type === 'mcq' && data.options.length >= 4) {
+        const fields = ['option_a', 'option_b', 'option_c', 'option_d'] as const
+        fields.forEach((field, i) => {
+          setValue(field, data.options[i] ?? '', {
+            shouldDirty: true,
+            shouldValidate: true,
+          })
+        })
+      }
+
+      if (data.correct_option.length > 0) {
+        // BE emits uppercase A/B/C/D; the form schema stores lowercase.
+        const lowered = data.correct_option.map(
+          (letter) => letter.toLowerCase() as 'a' | 'b' | 'c' | 'd',
+        )
+        setValue('correct_option', lowered, {
+          shouldDirty: true,
+          shouldValidate: true,
+        })
+      }
+    },
+    [setValue],
+  )
+
+  const watchedBody = methods.watch('question_body')
+  const watchedA = methods.watch('option_a')
+  const watchedB = methods.watch('option_b')
+  const watchedC = methods.watch('option_c')
+  const watchedD = methods.watch('option_d')
+  const showOverwriteConfirm = [
+    watchedBody,
+    watchedA,
+    watchedB,
+    watchedC,
+    watchedD,
+  ].some((v) => typeof v === 'string' && v.trim().length > 0)
 
   return (
     <FormProvider {...methods}>
@@ -189,6 +242,12 @@ export function QuestionForm({
             )}
           </div>
         </section>
+
+        <ParseFromImage
+          onParsed={applyParsedQuestion}
+          hasExistingContent={showOverwriteConfirm}
+          disabled={isSubmitting}
+        />
 
         {/* Question body */}
         <section className="space-y-2">
