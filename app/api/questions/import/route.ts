@@ -22,7 +22,6 @@ import {
 import { normalizeMathToLatex } from '@/lib/integrations/document/normalize-math-to-latex'
 import { parseQuestionsFromImage } from '@/lib/integrations/ai/parse-questions-from-image'
 import { GeminiError } from '@/lib/integrations/ai/gemini'
-import { renderPdfPagesToPng } from '@/lib/integrations/document/render-pdf-pages'
 import { questionCreateSchema } from '@/lib/validation/question'
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024
@@ -1043,6 +1042,12 @@ async function handlePdfVisionImport(
   const dr = await resolveDocumentDefaults(form)
   if (!dr.ok) return dr.response
   const defaults = dr.defaults
+
+  // Lazy-load so pdfjs-dist (via pdf-to-img) doesn't crash Next.js webpack
+  // RSC at route-module load time. The non-Vision paths never touch this.
+  const { renderPdfPagesToPng } = await import(
+    '@/lib/integrations/document/render-pdf-pages'
+  )
 
   let rendered: Awaited<ReturnType<typeof renderPdfPagesToPng>>
   try {
