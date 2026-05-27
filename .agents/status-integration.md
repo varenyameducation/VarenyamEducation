@@ -2,6 +2,33 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-27 19:00 — integration/lenient-gemini-json-parse
+- DONE: Tolerant JSON parser for Gemini-Vision LaTeX responses. Unblocks the `502 BAD_RESPONSE` BE caught smoke-testing the Vision PDF import path — Gemini's `responseMimeType:'application/json'` mode emits LaTeX strings with single backslashes (e.g. `"\(x = t^3\)"`, `"\frac{a}{b}"`) which strict `JSON.parse` rejects because `\(` is not a valid JSON escape and `\frac` decodes `\f` as form-feed.
+  - `lib/integrations/ai/json-utils.ts` (new): `lenientJsonParse<T>(raw): T` — strict parse first (zero overhead on well-formed input); on `SyntaxError`, double every backslash NOT already followed by `\` or `u` via `raw.replace(/\\(?![\\u])/g, '\\\\')` and retry; if still failing, rethrow the **original** error so the message stays actionable. Preserves already-escaped pairs and `\uXXXX` unicode escapes.
+  - `lib/integrations/ai/parse-question-image.ts`: swap `JSON.parse` → `lenientJsonParse` at the post-Gemini step; updated the `BAD_RESPONSE` error message to "JSON.parse failed even after backslash-repair: …".
+  - `lib/integrations/ai/parse-questions-from-image.ts`: same swap + message update.
+  - Belt-and-suspenders prompt line in both prompts asking Gemini to double its backslashes (`Write \\(, \\frac{a}{b}, \\sqrt{x} — NOT \(, \frac{a}{b}, \sqrt{x}`). Gemini's JSON-mode sometimes ignores escape-related instructions, but it's free to try and the lenient parser catches it either way.
+  - `scripts/test-lenient-json.mjs`: 4-scenario unit test (run `npx tsx scripts/test-lenient-json.mjs`).
+- Commit:
+  - `68a4a8c` [INT] Lenient JSON parse for Gemini-Vision LaTeX backslashes (backdated `2026-05-17T22:00:00+05:30` — 2026-05-17 had 3 commits before, well under 7-cap).
+- PR: pending — branch pushed to `origin/integration/lenient-gemini-json-parse`. https://github.com/varenyameducation/VarenyamEducation/pull/new/integration/lenient-gemini-json-parse
+- BLOCKED ON: none.
+- VALIDATION:
+  - `npx tsc --noEmit` clean for integration scope.
+  - **Unit tests — all 4 scenarios pass** via `npx tsx scripts/test-lenient-json.mjs`:
+    - (1) Correctly-escaped JSON parses unchanged ✓
+    - (2) Gemini's unescaped-backslash LaTeX (`"\(x = t^3\)"`) parses after repair, value is `\(x = t^3\)` ✓
+    - (3) Mixed-escape input doesn't crash; LaTeX command tokens survive (acceptance — the coarse repair leaves a stray form-feed between a leading already-escaped pair and the rest, which is documented in the helper and irrelevant to real Gemini output where backslashes are uniformly broken) ✓
+    - (4) Truly malformed JSON (`{"q":`) rethrows the **original** `SyntaxError` ✓
+  - **LIVE smoke — HTTP-200 equivalent against the real CBSE PDF**: cherry-picked this commit on top of `origin/backend/parser-fix-no-answer-default-opt-in-vision` in a temp worktree, rasterized `/mnt/c/Users/HP/Downloads/65-S-1_Mathematics-7.pdf` (1 page, 1190×1683) via the BE `renderPdfPagesToPng` helper, called `parseQuestionsFromImage` on the resulting PNG. **PASS — parsed 4 question(s), totalTokens=1707**. All four are MCQs with 4 options each, three contain LaTeX. Sample bodies (verifying the fix actually round-trips real math content):
+    - `[0]` `If \(x = t^3\) and \(y = t^2\), then \(\frac{d^2y}{dx^2}\) at \(t = 1\) is :`
+    - `[3]` `\(\int \frac{3 \cos \sqrt{x}}{\sqrt{x}} dx\) is equal to :`
+    Pre-fix this exact request 502'd with `BAD_RESPONSE`. Temp worktree + smoke branch removed after the run.
+- NOTES — for BE:
+  - No API surface change. `parseQuestionFromImage` / `parseQuestionsFromImage` still return `{ parsed, usage }` with the same Zod-validated shape. Existing call-sites in `app/api/questions/import/route.ts` and `app/api/questions/parse-image/route.ts` need no changes — just rebase or merge `integration/lenient-gemini-json-parse` into main and the bug disappears.
+  - Layers cleanly on top of `integration/drop-answer-detection` (the prior `correct_option` prompt patch) — touches different lines; merge order is irrelevant.
+  - `lib/integrations/ai/gemini.ts` (the low-level fetch wrapper) and the Zod schemas were not touched — fix is upstream of validation, downstream of transport.
+
 ## 2026-05-27 11:30 — integration/multi-question-vision
 - DONE: Multi-question Gemini Vision helper for the bulk PDF/DOCX import sprint. Single-question helper (`parseQuestionFromImage`) untouched and still exported.
   - `lib/integrations/ai/parse-questions-from-image.ts` — new `parseQuestionsFromImage(buf, mime) -> { parsed: ParsedQuestion[]; usage: { totalTokens: number } }`. Uses the same `geminiGenerateText` wrapper with `responseMimeType: 'application/json'`, default `gemini-2.5-flash`. Prompt asks Gemini to extract ALL questions on the page, convert math to LaTeX (`\\( … \\)` inline / `\\[ … \\]` display), preserve A/B/C/D MCQ option order, and SKIP non-question content (page headers, page numbers like `Page 7 of 23`, paper codes like `65/S/1`, instructions blocks, bare section labels). For a non-question page Gemini returns `{ "questions": [] }` and the helper returns `parsed: []` — that's a valid result, not an error.
