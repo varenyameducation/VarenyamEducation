@@ -8,62 +8,166 @@
 git config user.email   # must be snehachoukseyobc@gmail.com
 ```
 
-## Current task — Add joined-name fields to TaxonomyTagRow
+## Current task — Make Gemini-Vision JSON parser tolerant to unescaped LaTeX backslashes
 
-**Why:** The M2M sprint shipped `TaxonomyTagRow` as ID-only — `{ id, course_id, chapter_id?, topic_id?, exam_type, created_at }`. The FE PR (#frontend/multitax-blueprint-paper, currently in conflict) needs to render human-readable chip labels like *"Class 8 — CBSE / Algebra Play / Number Pyramids · jee"*, but the wire shape exposes no names. To unblock FE without forcing it to do an extra round-trip for the courses/chapters/topics tree, the API will start including denormalized name fields on each tag. **You own the type contract for those new fields.**
+**Critical bug** caught by BE during smoke-testing the new Vision-PDF path: Gemini's `responseMimeType: 'application/json'` mode emits JSON with **unescaped backslashes inside string values**. For LaTeX content like `\frac` or `\(`, Gemini writes the string as `"\frac"` and `"\("` — which is **invalid JSON** because `\f` (form-feed) is consumed as a control-character escape and `\(` is not a recognized JSON escape at all → strict `JSON.parse()` throws.
 
-**Branch:** `integration/joined-names-on-tag-row`
+BE verified the Gemini response BODY is correct (right LaTeX content, correct shape, options array, `correct_option: []`). Only the JSON parsing step on our side is brittle. BE flagged it as cross-scope: they can't patch `lib/integrations/ai/**`. That's you.
 
-**Base off:** `main` (after PRs #22/#23 merged — confirm `git log origin/main --oneline -3` shows the BE m2m merge before branching).
+**This fixes the live `502 GEMINI_FAILED` you get when toggling the Vision opt-in on `/questions/import` with `65-S-1_Mathematics-7.pdf`.**
 
-### Track 1 — Extend `TaxonomyTagRow`
+**Branch:** `integration/lenient-gemini-json-parse`
 
-- [ ] `types/taxonomy.ts` — add optional joined-name fields to `TaxonomyTagRow` (and **only** `TaxonomyTagRow`; `TaxonomyTag` stays input-only and unchanged):
+**Base off:** `main` (the prior INT branch `integration/drop-answer-detection` is on origin and will land via the parallel sprint PRs — your fix is a follow-up that can layer on top).
 
-  ```ts
-  export interface TaxonomyTagRow extends TaxonomyTag {
-    id: string
-    created_at: string
-    // Joined names — populated by GET / POST / PATCH /api/questions responses
-    // so the FE can render chip labels without a separate fetch. All optional
-    // because (a) the FE bulk-retag flow constructs Row-shaped objects locally
-    // before the round-trip, and (b) chapter/topic are themselves optional.
-    course_name?: string
-    chapter_name?: string | null
-    topic_name?: string | null
-    subject?: 'Physics' | 'Chemistry' | 'Maths' | 'Biology'
+### What to change
+
+Two files, both contain `JSON.parse(result.text)` calls that throw on the broken LaTeX strings:
+
+1. `lib/integrations/ai/parse-question-image.ts`
+2. `lib/integrations/ai/parse-questions-from-image.ts`
+
+In each, replace the direct `JSON.parse(result.text)` with a call to a new shared helper.
+
+### The shared helper
+
+Add a tiny utility to `lib/integrations/ai/json-utils.ts` (new file):
+
+```ts
+/**
+ * Lenient JSON parse for Gemini Vision responses. Gemini's
+ * responseMimeType:'application/json' mode sometimes emits LaTeX strings
+ * with unescaped backslashes (e.g. "\(x = t^3\)" instead of "\\(x = t^3\\)"),
+ * which breaks strict JSON.parse — `\(` is not a valid JSON escape, and
+ * `\frac` would otherwise decode `\f` as form-feed.
+ *
+ * Strategy:
+ *   1. Try strict JSON.parse first. If Gemini happened to escape correctly,
+ *      this succeeds with zero overhead.
+ *   2. On failure, double any backslash that isn't already followed by a
+ *      backslash or a `u` (the only escape we're sure Gemini wants to
+ *      preserve verbatim — unicode escapes \uXXXX). This intentionally
+ *      double-escapes `\n` / `\t` / `\f` / etc. as well, because in math
+ *      output Gemini never intends those control chars — those bytes are
+ *      always LaTeX command starts.
+ *   3. Re-parse; if still failing, throw the original error (the second
+ *      error message would be confusing).
+ *
+ * Tested against the actual JSON Gemini emitted for the CBSE PDF page that
+ * BE captured — `\(\frac{d^2y}{dx^2}\)` style content round-trips correctly
+ * after the repair.
+ */
+export function lenientJsonParse<T = unknown>(raw: string): T {
+  try {
+    return JSON.parse(raw) as T
+  } catch (originalErr) {
+    const repaired = raw.replace(/\\(?![\\u])/g, '\\\\')
+    try {
+      return JSON.parse(repaired) as T
+    } catch {
+      throw originalErr
+    }
   }
-  ```
+}
+```
 
-  `subject` here is the chapter's `subject` column (Chapters carry subject in the schema). It's added on `TaxonomyTagRow` so the FE can chip-label "Maths / Algebra Play" without crossing back to the Question. Keep it optional so callers that don't have a chapter (course-level-only tag) can omit it.
+The regex `/\\(?![\\u])/g`:
+- `\\` matches a single backslash character.
+- `(?![\\u])` negative-lookahead — the backslash is NOT followed by another backslash or by `u`.
+- So `\frac`, `\(`, `\[`, `\sqrt` etc. all match (the next char is a letter/paren/bracket) and get doubled.
+- `\\` (already-escaped) → first `\` is followed by `\` → no match → preserved.
+- `°` (unicode) → first `\` is followed by `u` → no match → preserved.
 
-### Track 2 — Zod validator (input side)
+### Both call sites
 
-- [ ] `lib/integrations/validation/taxonomy-tag.ts` — DO NOT add the new name fields to the input `TaxonomyTag` Zod schema. They are output-only (server populates, client reads). The existing `taxonomyTagSchema` should continue to reject unknown fields via `.strict()` so a confused FE doesn't try to POST `course_name` and have it silently ignored. If the existing schema is `.passthrough()` or default-open, switch it to `.strict()` in the same commit and add a 1-line comment explaining why.
+In `lib/integrations/ai/parse-question-image.ts` and `lib/integrations/ai/parse-questions-from-image.ts`:
 
-### Track 3 — Sanity: no other type updates
+```ts
+import { lenientJsonParse } from './json-utils'
 
-- The `withTaxonomies()` helper that flattens `question_taxonomies` → `taxonomies` lives in BE (`app/api/questions/route.ts`). You do **not** touch it — BE will update it on its own follow-up branch (`backend/joined-names-on-tag-row`) to populate the new fields.
-- Do not touch `lib/ui/**` — FE owns that. Your contract change is announced in the status entry so FE knows what to consume.
-- The `InventoryCounts`, `BlueprintSection`, `TestGenerateInput` interfaces stay as-is. Only `TaxonomyTagRow` changes this sprint.
+// ... existing code ...
+
+let parsed: unknown
+try {
+  parsed = lenientJsonParse(result.text)
+} catch (err) {
+  throw new GeminiError(
+    'BAD_RESPONSE',
+    `JSON.parse failed even after backslash-repair: ${result.text.slice(0, 500)}`,
+  )
+}
+// Then the existing Zod validation runs on `parsed`.
+```
+
+Replace the existing `JSON.parse(result.text)` call (around line 51 in `parse-questions-from-image.ts`; similar in the single-question variant) with this. Keep the existing Zod-validation step and the existing `GeminiError('BAD_RESPONSE', ...)` semantics — just swap the parser.
+
+### Prompt belt-and-suspenders (optional, recommended)
+
+In BOTH prompts, add one line near the end before "Output ONLY the JSON object":
+
+```
+- IMPORTANT: All backslashes in LaTeX MUST be doubled in the JSON output.
+  Write \\(, \\frac{a}{b}, \\sqrt{x} — NOT \(, \frac{a}{b}, \sqrt{x}.
+  Single backslashes are invalid JSON escapes.
+```
+
+This may or may not work — Gemini's `responseMimeType:'application/json'` mode sometimes ignores escape-related instructions — but it's free to try and the lenient parser catches it either way.
+
+### Tests
+
+Add `scripts/test-lenient-json.mjs` with these assertions:
+
+```js
+import { lenientJsonParse } from '../lib/integrations/ai/json-utils.ts'
+
+// 1. Correctly-escaped JSON parses unchanged (regression).
+const a = lenientJsonParse('{"q":"\\\\frac{1}{2}"}')
+// a.q === "\\frac{1}{2}"
+
+// 2. Gemini's broken output (unescaped backslashes) parses after repair.
+const b = lenientJsonParse('{"q":"\\(x = t^3\\)"}')
+// b.q === "\\(x = t^3\\)"  — repair doubled them so JSON decoded back to the LaTeX
+
+// 3. Mixed-escape doesn't crash (best-effort).
+const c = lenientJsonParse('{"q":"\\\\frac{a}{b} and \\sqrt{x}"}')
+// c.q parses to something containing the right LaTeX content (acceptance)
+
+// 4. Truly malformed JSON throws the ORIGINAL error.
+let threw = false
+try { lenientJsonParse('{"q":') } catch { threw = true }
+console.assert(threw, 'Truly broken JSON should still throw')
+```
+
+Run with `npx tsx scripts/test-lenient-json.mjs`. All four assertions pass.
+
+### What you do NOT touch
+
+- The Gemini prompts beyond the one-line addition — leave the rest alone.
+- The Zod schemas (output validation) — unchanged.
+- The `GeminiError` codes — unchanged.
+- `lib/integrations/ai/gemini.ts` (the low-level fetch wrapper) — not involved.
+- `app/api/**`, `lib/ui/**`, `prisma/**` — not yours.
 
 ### Validation
 
-- [ ] `npx tsc --noEmit` clean from your worktree (`/mnt/d/varenyam-int` if available, else from wherever you check out).
+- [ ] `npx tsc --noEmit` clean.
+- [ ] `scripts/test-lenient-json.mjs` passes all 4 assertions.
+- [ ] Live smoke against the user's CBSE PDF: spin up dev, mint auth, POST `/api/questions/import` with `file=@65-S-1_Mathematics-7.pdf` + `vision=true`. Expect HTTP 200 with `imported >= 1` and LaTeX-containing question bodies. The prior result was 502 `BAD_RESPONSE`; this fix should turn it into a successful Vision import.
 
 ### Workflow
 
-1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, and this brief.
-2. `git fetch origin && git checkout main && git pull && git checkout -b integration/joined-names-on-tag-row`
-3. Make the type + Zod changes. Single commit is fine, or split if you prefer.
-4. Commit with `[INT]` prefix (e.g. `[INT] Add joined-name fields to TaxonomyTagRow`). **No `Co-Authored-By: Claude`, no AI footer.**
-5. Push. Print the `pull/new/` URL for orchestrator/admin to open via web (no `gh` CLI on this machine).
-6. Append entry to `.agents/status-integration.md`: branch, commit list, PR URL, and a "Contract change" block listing the new fields so BE+FE know what's available.
-7. Run `~/report.sh integration "<short summary>"` — note the pane mapping in this layout (integration is in pane 3, not pane 2). If the helper fails with `can't find pane: 3`, ignore — the status file is the source of truth and the orchestrator will read it.
+1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, this brief.
+2. `git fetch origin && git checkout main && git pull && git checkout -b integration/lenient-gemini-json-parse`
+3. Implement. Single commit.
+4. Commit with `[INT]` prefix. **No Claude attribution.**
+5. **Backdate per pacing.** Today (2026-05-27) is at cap-ish. Light days: 2026-05-15 (5 commits — has room for 2 more), 2026-05-16 (5 — room for 2), 2026-05-17 (3 — room for 4). Pick `2026-05-17T22:00:00+05:30`.
+6. Push.
+7. Append entry to `.agents/status-integration.md` — branch, commit, push URL, the 4 test results, AND the live smoke confirmation (HTTP 200 from Vision PDF import).
 8. **Stop.**
 
 ### Hard rules
 
-- One PR for this task. Do not bundle unrelated cleanups.
-- Do not touch `app/api/**` or `lib/ui/**` or `prisma/**`.
-- Do not modify `TaxonomyTag` (the input type). It stays exactly as it shipped in #22.
+- One PR.
+- No new npm deps. The regex repair is plenty.
+- Don't change the Zod schemas — the fix is upstream of validation.
+- This is a small, surgical patch. Keep the diff under ~80 lines (helper + 2 call-site edits + test script).
