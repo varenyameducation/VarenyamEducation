@@ -59,6 +59,11 @@ export function QuestionCard({ q, selected, onToggleSelected }: QuestionCardProp
     [q.correct_option],
   )
 
+  // Bulk-imported MCQs land with correct_option:[] + is_verified:false; we
+  // must not flag (A) (or anything else) as "correct" until a human has set
+  // the answer and verified the question.
+  const showAnswerHighlights = q.is_verified === true && correctSet.size > 0
+
   const isMcq = q.question_type === 'mcq' || q.question_type === 'multi_select'
   const tags = q.taxonomies ?? []
   const primaryTag = tags[0] ?? null
@@ -88,6 +93,11 @@ export function QuestionCard({ q, selected, onToggleSelected }: QuestionCardProp
           {q.difficulty}
         </Badge>
         <Badge variant="secondary">{q.subject}</Badge>
+        {!q.is_verified && (
+          <Badge className="border-transparent bg-amber-100 text-amber-800 hover:bg-amber-100">
+            Needs review · set correct answer
+          </Badge>
+        )}
         {primaryTag && (
           <span
             className="inline-flex max-w-[42ch] items-center truncate rounded-full border border-primary/30 bg-primary/5 px-2 py-0.5 text-xs"
@@ -118,7 +128,7 @@ export function QuestionCard({ q, selected, onToggleSelected }: QuestionCardProp
             const value = q[key]
             if (!value) return null
             const letter = OPTION_LETTERS[idx]
-            const isCorrect = correctSet.has(letter)
+            const isCorrect = showAnswerHighlights && correctSet.has(letter)
             return (
               <li
                 key={key}

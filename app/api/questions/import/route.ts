@@ -22,6 +22,7 @@ import {
 import { normalizeMathToLatex } from '@/lib/integrations/document/normalize-math-to-latex'
 import { parseQuestionsFromImage } from '@/lib/integrations/ai/parse-questions-from-image'
 import { GeminiError } from '@/lib/integrations/ai/gemini'
+import { renderPdfPagesToPng } from '@/lib/integrations/document/render-pdf-pages'
 import { questionCreateSchema } from '@/lib/validation/question'
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024
@@ -129,11 +130,20 @@ export async function POST(request: NextRequest) {
     })
   }
 
+  // Opt-in Gemini Vision path for PDF imports. Default (no flag, or
+  // 'false') is the heuristic text-extraction path — same as DOCX. Vision
+  // is only triggered for PDF when the FE sends vision='true' alongside
+  // the file (i.e. the "use AI for math-heavy PDF" checkbox).
+  const useVision = form.get('vision') === 'true'
+
   if (kind === 'xlsx') {
     return handleXlsxImport(request, form, file, auth)
   }
   if (kind === 'image') {
     return handleImageImport(request, form, file, auth)
+  }
+  if (kind === 'pdf' && useVision) {
+    return handlePdfVisionImport(request, form, file, auth)
   }
   return handleDocumentImport(request, form, file, kind, auth)
 }
@@ -313,7 +323,10 @@ async function handleDocumentImport(
           option_b: (v as { option_b: string }).option_b,
           option_c: (v as { option_c: string }).option_c,
           option_d: (v as { option_d: string }).option_d,
-          correct_option: ['A'],
+          // Per product direction: never guess the correct answer on bulk
+          // import. The user marks each MCQ's answer manually after
+          // review. is_verified stays false so the QB flags it.
+          correct_option: [],
           image_urls: urls,
           tags: [],
           is_verified: false,
@@ -395,7 +408,7 @@ async function handleDocumentImport(
     errors,
     header: parsed.header,
     note:
-      'MCQs imported with correct_option defaulted to "A" — review and correct in the Question Bank. Subjective questions imported as descriptive (answer in dashboard).',
+      'MCQs imported without a correct answer marked — review each question in the Question Bank to set the actual answer. is_verified = false on all imports.',
   })
 }
 
@@ -907,7 +920,11 @@ async function handleImageImport(
         option_b: q.options[1],
         option_c: q.options[2],
         option_d: q.options[3],
-        correct_option: q.correct_option.length > 0 ? q.correct_option : ['A'],
+        // Bulk import never guesses the correct answer; user marks it
+        // manually after review. Even if Gemini surfaced a tick-marked
+        // answer in the image (rare for blank papers), the FE shows the
+        // imported question with no green-CORRECT badge until reviewed.
+        correct_option: [],
         image_urls: [],
         tags: [],
         is_verified: false,
@@ -1004,6 +1021,213 @@ async function handleImageImport(
     total_tokens: result.usage.totalTokens,
     errors,
     note:
-      'Image-extracted questions inserted with correct_option defaulted to "A" unless the image marked one — review in the Question Bank.',
+      'MCQs imported without a correct answer marked — review each question in the Question Bank to set the actual answer. is_verified = false on all imports.',
+  })
+}
+
+// ─── PDF Vision import (opt-in via vision='true' multipart flag) ────────────
+
+// Target 12 RPM (free tier is 15 RPM); one call every 5 s leaves headroom.
+const GEMINI_PACING_MS = 5000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function handlePdfVisionImport(
+  request: NextRequest,
+  form: FormData,
+  file: File,
+  auth: { user: { id: string }; payload: { role: string } },
+) {
+  const dr = await resolveDocumentDefaults(form)
+  if (!dr.ok) return dr.response
+  const defaults = dr.defaults
+
+  let rendered: Awaited<ReturnType<typeof renderPdfPagesToPng>>
+  try {
+    rendered = await renderPdfPagesToPng(Buffer.from(await file.arrayBuffer()), {
+      maxPages: 30,
+    })
+  } catch (e) {
+    return err(400, {
+      code: 'EXTRACTION_FAILED',
+      message: `Could not render PDF pages: ${e instanceof Error ? e.message : 'unknown error'}`,
+    })
+  }
+
+  type Pending = {
+    rowNumber: number
+    data: Prisma.QuestionUncheckedCreateInput
+    taxonomy: {
+      course_id: string
+      subject_id: string
+      chapter_id: string
+      topic_id: string
+      exam_type: string
+    }
+  }
+  const pending: Pending[] = []
+  const errors: ImportError[] = rendered.errors.map((e) => ({
+    row: e.pageNumber,
+    reason: `Page ${e.pageNumber}: ${e.reason}`,
+  }))
+  let totalTokens = 0
+  let mcqCount = 0
+  let subjectiveCount = 0
+
+  for (let i = 0; i < rendered.pages.length; i++) {
+    const page = rendered.pages[i]
+    // Pace Gemini calls. First call has no preceding wait.
+    if (i > 0) await sleep(GEMINI_PACING_MS)
+
+    let pageResult: Awaited<ReturnType<typeof parseQuestionsFromImage>>
+    try {
+      pageResult = await parseQuestionsFromImage(page.pngBuffer, 'image/png')
+    } catch (e) {
+      // Per brief: do NOT retry on rate-limit — burn-through risk. Just log
+      // the page error and move on. Other GeminiError codes are similarly
+      // surfaced per-page so a single bad page doesn't poison the run.
+      if (e instanceof GeminiError) {
+        errors.push({
+          row: page.pageNumber,
+          reason: `Page ${page.pageNumber}: ${e.code} — ${e.message}`,
+        })
+      } else {
+        errors.push({
+          row: page.pageNumber,
+          reason: `Page ${page.pageNumber}: ${e instanceof Error ? e.message : 'unknown error'}`,
+        })
+      }
+      continue
+    }
+
+    totalTokens += pageResult.usage.totalTokens
+    for (const q of pageResult.parsed) {
+      const marks = defaults.marks_default
+      if (q.question_type === 'mcq' && q.options.length < 4) {
+        errors.push({
+          row: page.pageNumber,
+          reason: `Page ${page.pageNumber}: MCQ returned ${q.options.length} options (need 4) — skipped`,
+        })
+        continue
+      }
+      let data: Prisma.QuestionUncheckedCreateInput
+      if (q.question_type === 'mcq') {
+        data = {
+          subject: defaults.subject,
+          question_type: 'mcq',
+          difficulty: defaults.difficulty,
+          marks_correct: marks,
+          marks_negative: 0,
+          question_body: q.question_body,
+          created_by: auth.user.id,
+          option_a: q.options[0],
+          option_b: q.options[1],
+          option_c: q.options[2],
+          option_d: q.options[3],
+          // Per Change B: bulk import never auto-marks the correct answer.
+          correct_option: [],
+          image_urls: [],
+          tags: [],
+          is_verified: false,
+        }
+        mcqCount += 1
+      } else {
+        data = {
+          subject: defaults.subject,
+          question_type: 'subjective',
+          difficulty: defaults.difficulty,
+          marks_correct: marks,
+          marks_negative: 0,
+          question_body:
+            q.question_type === 'numerical'
+              ? `[numerical — set answer in question bank] ${q.question_body}`
+              : q.question_body,
+          created_by: auth.user.id,
+          correct_option: [],
+          image_urls: [],
+          tags: [],
+          is_verified: false,
+        }
+        subjectiveCount += 1
+      }
+      const validated = questionCreateSchema.safeParse(data)
+      if (!validated.success) {
+        const issue = validated.error.issues[0]
+        errors.push({
+          row: page.pageNumber,
+          reason: `Page ${page.pageNumber}: ${issue.path.join('.') || '(question)'} — ${issue.message}`,
+        })
+        if (data.question_type === 'mcq') mcqCount -= 1
+        else subjectiveCount -= 1
+        continue
+      }
+      pending.push({
+        rowNumber: page.pageNumber,
+        data,
+        taxonomy: {
+          course_id: defaults.course_id,
+          subject_id: defaults.subject_id,
+          chapter_id: defaults.chapter_id,
+          topic_id: defaults.topic_id,
+          exam_type: defaults.exam_type,
+        },
+      })
+    }
+  }
+
+  let imported = 0
+  if (pending.length > 0) {
+    try {
+      await prisma.$transaction(async (tx) => {
+        for (const p of pending) {
+          const created = await tx.question.create({ data: p.data })
+          await tx.questionTaxonomy.create({
+            data: { question_id: created.id, ...p.taxonomy },
+          })
+          imported += 1
+        }
+      })
+    } catch (e) {
+      return err(500, {
+        code: 'BULK_INSERT_FAILED',
+        message: `Bulk insert failed; no rows imported (${e instanceof Error ? e.message : 'unknown'})`,
+        details: { errors, total_tokens: totalTokens },
+      })
+    }
+  }
+
+  await logAudit({
+    user_id: auth.user.id,
+    action: 'questions.bulk_import_vision',
+    entity_type: 'question',
+    meta: {
+      actor_role: auth.payload.role,
+      source: 'pdf',
+      imported,
+      mcq_count: mcqCount,
+      subjective_count: subjectiveCount,
+      pages_processed: rendered.pages.length,
+      total_pages_in_doc: rendered.totalPagesInDoc,
+      total_tokens: totalTokens,
+      failed: errors.length,
+      file_name: file.name,
+    },
+    ip_address: getClientIp(request),
+  })
+
+  return ok({
+    imported,
+    mcq_count: mcqCount,
+    subjective_count: subjectiveCount,
+    pages_processed: rendered.pages.length,
+    total_pages_in_doc: rendered.totalPagesInDoc,
+    total_tokens: totalTokens,
+    errors,
+    note:
+      rendered.totalPagesInDoc > rendered.pages.length
+        ? `Imported pages 1–${rendered.pages.length} of ${rendered.totalPagesInDoc}; re-upload the rest as a follow-up. MCQs imported without a correct answer marked — review each in the Question Bank.`
+        : 'MCQs imported without a correct answer marked — review each question in the Question Bank to set the actual answer. is_verified = false on all imports.',
   })
 }

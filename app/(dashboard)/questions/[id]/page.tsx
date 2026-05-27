@@ -55,6 +55,11 @@ export default function QuestionDetailPage({ params }: { params: { id: string } 
             </Badge>
             <Badge variant="secondary">{q.subject}</Badge>
             <Badge>{q.difficulty}</Badge>
+            {!q.is_verified && (
+              <Badge className="border-transparent bg-amber-100 text-amber-800 hover:bg-amber-100">
+                Needs review · set correct answer
+              </Badge>
+            )}
           </div>
         </div>
         <div className="flex gap-2">

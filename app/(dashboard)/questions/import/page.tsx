@@ -29,6 +29,8 @@ interface ImportResult {
   imported: number
   mcq_count?: number
   subjective_count?: number
+  pages_processed?: number
+  total_pages_in_doc?: number
   total_tokens?: number
   errors: ImportError[]
   note?: string
@@ -73,6 +75,7 @@ export default function ImportQuestionsPage() {
   const [result, setResult] = React.useState<ImportResult | null>(null)
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null)
   const [errorsExpanded, setErrorsExpanded] = React.useState(false)
+  const [useVision, setUseVision] = React.useState(false)
   const fileInputRef = React.useRef<HTMLInputElement | null>(null)
 
   const [courseId, setCourseId] = React.useState('')
@@ -122,7 +125,11 @@ export default function ImportQuestionsPage() {
 
   const kind: FileKind = file ? fileKind(file) : 'unknown'
   const isImage = kind === 'image'
-  const needsDefaults = kind === 'docx' || kind === 'pdf' || isImage
+  const isPdf = kind === 'pdf'
+  const needsDefaults = kind === 'docx' || isPdf || isImage
+  // Vision opt-in only applies to PDFs; if the user switches files to a
+  // non-PDF after checking the box, treat it as off for submit + UI.
+  const visionActive = useVision && isPdf
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -160,6 +167,7 @@ export default function ImportQuestionsPage() {
       fd.append('exam_type', examType)
       fd.append('marks_default', String(marksDefault))
     }
+    if (visionActive) fd.append('vision', 'true')
 
     const res = await apiPost<ImportResult>('/api/questions/import', fd)
     if (!res.ok) {
@@ -178,6 +186,7 @@ export default function ImportQuestionsPage() {
     setResult(null)
     setErrorMessage(null)
     setErrorsExpanded(false)
+    setUseVision(false)
     setStatus('idle')
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
@@ -232,10 +241,10 @@ export default function ImportQuestionsPage() {
           </p>
           <p>
             Question numbering can be <code>1.&nbsp;body&nbsp;[marks]</code>,{' '}
-            <code>Q1.&nbsp;body&nbsp;[marks]</code>, or similar. MCQs default to{' '}
-            <em>correct_option = &ldquo;A&rdquo;</em> and{' '}
-            <em>is_verified = false</em> — review each in the Question Bank to set
-            the actual answer.
+            <code>Q1.&nbsp;body&nbsp;[marks]</code>, or similar. MCQs import
+            without a correct answer marked — review each question in the
+            Question Bank to set the actual answer. <em>is_verified = false</em>{' '}
+            on all bulk imports.
           </p>
         </div>
       </div>
@@ -262,6 +271,40 @@ export default function ImportQuestionsPage() {
               <span className="uppercase">{kind === 'unknown' ? '!' : kind}</span>
             </p>
           )}
+        </div>
+
+        <div className="rounded-md border bg-muted/10 p-3">
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="checkbox"
+              className="mt-0.5 h-4 w-4"
+              checked={useVision}
+              onChange={(e) => setUseVision(e.target.checked)}
+              disabled={!isPdf}
+              aria-describedby="vision-help"
+            />
+            <span className={cn('space-y-1 text-sm', !isPdf && 'opacity-60')}>
+              <span className="font-medium">
+                Use AI Vision for math accuracy (PDF only)
+              </span>
+              <span id="vision-help" className="block text-xs text-muted-foreground">
+                Renders each page through Gemini Vision so 2D math notation
+                (fractions, integrals, exponents) comes through as proper LaTeX.
+                ~5 seconds per page; uses Gemini free-tier quota. Recommended for
+                math-heavy PDFs only.
+                {file && !isPdf && (
+                  <span className="ml-1 font-medium">
+                    PDF only — current file is .{kind === 'unknown' ? '?' : kind}.
+                  </span>
+                )}
+                {!file && (
+                  <span className="ml-1 font-medium">
+                    Select a PDF to enable this option.
+                  </span>
+                )}
+              </span>
+            </span>
+          </label>
         </div>
 
         {needsDefaults && (
@@ -452,7 +495,9 @@ export default function ImportQuestionsPage() {
               <p className="font-medium">
                 {isImage
                   ? 'Reading your image with Gemini Vision (5–15 seconds)…'
-                  : 'Parsing your document…'}
+                  : visionActive
+                    ? 'Importing via Gemini Vision (this may take 1–5 minutes for multi-page PDFs)…'
+                    : 'Parsing your document…'}
               </p>
             </div>
           </div>
@@ -505,6 +550,20 @@ export default function ImportQuestionsPage() {
           {isImage && typeof result.total_tokens === 'number' && (
             <p className="text-xs text-muted-foreground">
               1 image processed · ~{result.total_tokens.toLocaleString()} tokens (Gemini)
+            </p>
+          )}
+
+          {typeof result.pages_processed === 'number' && (
+            <p className="text-xs text-muted-foreground">
+              {result.pages_processed} page
+              {result.pages_processed === 1 ? '' : 's'} processed
+              {typeof result.total_pages_in_doc === 'number' &&
+              result.total_pages_in_doc !== result.pages_processed
+                ? ` (of ${result.total_pages_in_doc} total — re-upload the rest as a follow-up)`
+                : ''}
+              {typeof result.total_tokens === 'number' && !isImage
+                ? ` · ~${result.total_tokens.toLocaleString()} Gemini tokens used`
+                : ''}
             </p>
           )}
 
