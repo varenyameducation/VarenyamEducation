@@ -158,9 +158,14 @@ export const EXAM_TYPES: { value: ExamTypeValue; label: string }[] = [
 // legacy test/import paths.
 export const SUBJECTS: SubjectValue[] = subjectSchema.options
 
+// Row-level text is intentionally permissive — the seeded matrix_left/right
+// defaults (L1/L2/R1/R2) ship with empty text, and we don't want those
+// defaults to fail validation when question_type is anything other than
+// matrix_match. Required-text-per-row is enforced inside the superRefine
+// below, but only when question_type === 'matrix_match'.
 const matrixRowSchema = z.object({
   key: z.string().min(1),
-  text: z.string().min(1, 'Required'),
+  text: z.string(),
 })
 
 // Canonical id-only TaxonomyTag (course + optional chapter + optional topic
@@ -245,6 +250,24 @@ export const questionFormSchema = z
           path: ['matrix_left'],
         })
       }
+      left.forEach((row, i) => {
+        if (!row.text || row.text.trim().length === 0) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Row text required',
+            path: ['matrix_left', i, 'text'],
+          })
+        }
+      })
+      right.forEach((row, i) => {
+        if (!row.text || row.text.trim().length === 0) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Row text required',
+            path: ['matrix_right', i, 'text'],
+          })
+        }
+      })
     }
   })
 
@@ -253,6 +276,7 @@ export type QuestionFormValues = z.infer<typeof questionFormSchema>
 export const questionFormDefaults: Partial<QuestionFormValues> = {
   question_type: 'mcq',
   difficulty: 'medium',
+  subject: 'Maths',
   taxonomies: [],
   marks_correct: 4,
   marks_negative: 1,
