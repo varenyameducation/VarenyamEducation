@@ -1,5 +1,5 @@
 import * as React from 'react'
-import katex from 'katex'
+import { renderBodyToHtml } from '@/lib/ui/render-body-html'
 import type { Branding } from './branding'
 
 // --- Brand palette (locked by orchestrator). Reads `brand_color_hex` from
@@ -54,25 +54,11 @@ export type PaperMeta = {
   instructions?: string | null
 }
 
-function renderKatex(source: string | null | undefined): string {
-  if (!source) return ''
-  const hasLatex = /\\[a-zA-Z]+|[\^_{}]|\$[^$]+\$/.test(source)
-  if (!hasLatex) return escapeHtml(source)
-  try {
-    return katex.renderToString(source, {
-      output: 'html',
-      throwOnError: false,
-      displayMode: false,
-      strict: 'ignore',
-    })
-  } catch {
-    return escapeHtml(source)
-  }
-}
-
 // Render a body that may contain inline `[[IMG:<url>]]` placeholders plus
 // LaTeX-ish text. Adjacent image placeholders sit side-by-side; each image
-// is capped at 200×140 px to match the reference paper.
+// is capped at 200×140 px to match the reference paper. Non-image segments
+// run through the canonical splitter so `\(...\)`, `\[...\]`, `$$...$$` are
+// rendered as math instead of escaped to the page.
 function renderBodyWithImages(source: string | null | undefined): string {
   if (!source) return ''
   const re = /\[\[IMG:([^\]]+)\]\]/g
@@ -92,7 +78,7 @@ function renderBodyWithImages(source: string | null | undefined): string {
   while (i < parts.length) {
     const p = parts[i]
     if (p.kind === 'text') {
-      out.push(renderKatex(p.value))
+      out.push(renderBodyToHtml(p.value))
       i++
       continue
     }
@@ -132,13 +118,6 @@ function renderBodyWithImages(source: string | null | undefined): string {
     i = j
   }
   return out.join('')
-}
-
-function escapeHtml(input: string): string {
-  return input
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
 }
 
 // Read brand color from branding row. Treat the legacy navy default and
@@ -552,7 +531,7 @@ function QuestionRow({ index, row, brand }: { index: number; row: PaperRow; bran
             return (
               <div key={letter}>
                 <strong>({letter})</strong>{' '}
-                <span dangerouslySetInnerHTML={{ __html: renderKatex(value) }} />
+                <span dangerouslySetInnerHTML={{ __html: renderBodyToHtml(value) }} />
               </div>
             )
           })}
