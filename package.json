@@ -8,7 +8,8 @@
     "start": "next start -p 4000",
     "lint": "next lint",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev"
+    "prisma:migrate": "prisma migrate dev",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@codemirror/legacy-modes": "^6.5.2",
