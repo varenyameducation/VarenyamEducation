@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Mail } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -24,7 +23,6 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Separator } from '@/components/ui/separator'
 
 const loginSchema = z.object({
   email: z.string().email({ message: 'Enter a valid email' }),
@@ -64,11 +62,9 @@ function LoginPageInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const initialError =
-    searchParams.get('error') === 'oauth_failed'
-      ? 'Google sign-in failed. Please try again.'
-      : searchParams.get('error') === 'oauth_no_email'
-        ? 'Google account did not return an email address.'
-        : null
+    searchParams.get('error') === 'inactive'
+      ? 'Your account has been deactivated. Please contact an administrator.'
+      : null
 
   const [serverError, setServerError] = useState<string | null>(initialError)
   const [submitting, setSubmitting] = useState(false)
@@ -160,24 +156,9 @@ function LoginPageInner() {
             </form>
           </Form>
 
-          <div className="relative py-2">
-            <Separator />
-            <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 bg-card px-3 text-xs uppercase text-muted-foreground">
-              or
-            </span>
-          </div>
-
-          <Button
-            type="button"
-            variant="outline"
-            className="w-full"
-            onClick={() => {
-              window.location.href = '/api/auth/google'
-            }}
-          >
-            <Mail className="mr-2 h-4 w-4" />
-            Sign in with Google
-          </Button>
+          <p className="text-center text-xs text-muted-foreground">
+            Accounts are issued by your administrator. Contact them if you need access.
+          </p>
         </CardContent>
       </Card>
     </main>

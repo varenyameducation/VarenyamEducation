@@ -3,10 +3,7 @@ import { verifyJWTEdge } from '@/lib/auth/jwt-edge'
 
 const PUBLIC_ROUTES = new Set([
   '/login',
-  '/auth/callback',
-  '/auth/google',
   '/api/auth/login',
-  '/api/auth/google',
   '/api/auth/refresh',
 ])
 
