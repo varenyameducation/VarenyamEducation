@@ -6,122 +6,108 @@
 
 ```
 git config user.email   # must be snehachoukseyobc@gmail.com
+gh auth status          # active account must be snehachoukseyobc
 ```
 
-## Current task — Resolve m2m PR conflict; consume joined-name fields
+If either is wrong, fix before committing.
 
-**Why:** The frontend M2M PR (`frontend/multitax-blueprint-paper`, 5 commits, already pushed) has a textual conflict with main in `lib/ui/api.ts` plus a deeper type mismatch:
+---
 
-- FE built against a local mock `TaxonomyTag` in `@/lib/ui/mocks/m2m` that carries `course_name`, `chapter_name`, `topic_name`, `subject` (denormalized names for chip rendering).
-- INT + BE shipped a canonical `TaxonomyTagRow` in `@/types/taxonomy` that is ID-only.
+## Current Task — Varenyam favicon + light brand palette refresh
 
-INT has now landed `integration/joined-names-on-tag-row` (adds optional `course_name`/`chapter_name?`/`topic_name?`/`subject?` to `TaxonomyTagRow`). BE has landed `backend/joined-names-on-tag-row` (populates those fields on every `/api/questions` response). **Your job is to rebase, resolve the conflict, drop the mock TaxonomyTag type definition, and migrate all callsites to the canonical type.**
+**Scope is tight on purpose.** The user wants something shipped today: a favicon using Varenyam's V mark, and a subtle palette nudge so the app stops looking like a generic shadcn slate template and starts feeling Varenyam-branded. Functionality is OUT of scope — do not touch any component logic, route, or behaviour.
 
-**Branch:** `frontend/multitax-blueprint-paper` (existing — don't create a new one; rebase the existing branch).
+### Brand colours (from the V mark)
 
-### Workflow at a glance
+The logo at `/public/brand/varenyam-logo-mark.png` is already in the repo (250×230 RGBA, V composed of teal + yellow + red rectangles on transparent ground). Use it as the source of truth.
 
-1. `git fetch origin && git checkout frontend/multitax-blueprint-paper && git pull`
-2. `git rebase origin/main` — expect a conflict in `lib/ui/api.ts`. Resolve by taking main's side (the canonical interface) **and** dropping the legacy `course`/`chapter`/`topic` joined fields on `Question` (BE no longer returns them).
-3. Cascade-fix the consumer files (listed below).
-4. `npx tsc --noEmit` clean.
-5. `npx next build` (optional but recommended) to catch any runtime-only issues.
-6. Force-push the rebased branch: `git push --force-with-lease`.
-7. Append status entry; stop.
+Eyeballed hex values — refine to actual values by sampling the PNG in your tool of choice if you want more precision:
 
-### File-by-file changes
+| Role | Hex | Notes |
+|---|---|---|
+| **Brand Teal** (primary) | `#1A7E96` | dominant V colour; left rectangle |
+| **Brand Yellow** (accent) | `#F5B223` | small accent stripe on the teal block |
+| **Brand Red** (destructive) | `#CC2027` | right V slab |
+| Background | `#FFFFFF` | stays white |
+| Text | unchanged | keep current near-black |
 
-#### `lib/ui/api.ts`
+Convert each to HSL for the CSS variables (shadcn convention stores them as space-separated H S L without the `hsl()` wrapper).
 
-- Take main's side for both conflict hunks.
-- Final shape of the import:
-  ```ts
-  import type { TaxonomyTagRow } from '@/types/taxonomy'
-  ```
-- Final shape of `Question`:
-  ```ts
-  export interface Question {
-    id: string
-    subject: SubjectValue
-    ...
-    taxonomies: TaxonomyTagRow[]
-    // No more course/chapter/topic joined fields.
-  }
-  ```
+### What to change — exactly
 
-#### `lib/ui/mocks/m2m.ts`
+**1. Favicon.** Next.js App Router auto-discovers `app/icon.png` (or `app/icon.svg`, or `app/favicon.ico`) and wires the appropriate `<link rel="icon">` tags. Add `app/icon.png` — either:
+- Copy the existing `public/brand/varenyam-logo-mark.png` to `app/icon.png` (simplest), OR
+- Use `sharp` (already a project dependency) in a one-shot Node script you run locally to resize the mark to a square 512×512 or 256×256 with transparent padding, then save to `app/icon.png`. The mark is 250×230 right now — slight aspect mismatch but not critical for favicon use. Square + centered with a few px of breathing room reads cleaner at 16×16/32×32 tab sizes.
 
-- Delete the local `export type TaxonomyTag = { course_id; course_name; ... }` definition.
-- Re-export from canonical:
-  ```ts
-  export type { TaxonomyTag, TaxonomyTagRow } from '@/types/taxonomy'
-  ```
-- `formatTagLabel(tag)` — change parameter type to `TaxonomyTagRow`. Read `tag.course_name`, `tag.chapter_name`, `tag.topic_name` (all now live on the canonical row when populated by BE). Fall back to the IDs (formatted as short strings) when names are missing — this keeps the function safe for locally-constructed rows that haven't round-tripped through the API yet.
-- `deriveQuestionTags(q)` — this used to fabricate a `TaxonomyTag` from the legacy `Question.course/chapter/topic` joined fields. Those are GONE on `Question`. **Delete `deriveQuestionTags` and all its callsites** — consumers should read `q.taxonomies` directly. If a callsite needs a "first tag" fallback for legacy untagged questions, use `q.taxonomies[0]` and gate the render with `q.taxonomies.length > 0`.
-- `MOCK_M2M_TAGS_BY_QUESTION` — update each mock row to be the canonical shape: `{ id, course_id, chapter_id?, topic_id?, exam_type, created_at, course_name, chapter_name?, topic_name?, subject? }`. Generate plausible `id`/`created_at` for the mocks (e.g. `crypto.randomUUID()` and `new Date().toISOString()` evaluated once at module load, or hard-coded fixtures).
-- `LegacyTaggedQuestion` type can be deleted (its only consumer was `deriveQuestionTags`).
+Verify by `curl -sI http://localhost:4000/icon.png` returns 200 after dev restart.
 
-#### `components/questions/taxonomy-tag-picker.tsx`
+**Also add `app/apple-icon.png`** if trivial — same source, 180×180. Optional; skip if it doesn't fit in scope.
 
-- The component holds picker state. Internal `value: TaxonomyTag[]` from `@/types/taxonomy` should remain the input/output type (no names) — the picker BUILDS tags, doesn't render labels for tags-in-flight. For chip labels, take a parallel `taxonomyOptions: TaxonomyTagRow[]` prop that has names, or do a lookup against the in-context course/chapter/topic state that the parent already has.
-- Cleanest interface change: keep `value: TaxonomyTag[]` (canonical input shape, name-less) and add a `formatLabel?: (tag: TaxonomyTag) => string` callback prop that the parent supplies. Parent has access to its course/chapter/topic state and can format. Default the formatter to a fallback that prints `chapter_id ?? course_id`.
-- This is a real refactor — take care to keep the existing keyboard/blur behavior.
+**2. Palette tokens.** Edit `app/globals.css` only — the `:root` block (light mode). Do NOT touch the `.dark` block; the app doesn't expose a dark-mode toggle yet and changing it now risks regressions you can't visually verify.
 
-#### `components/questions/question-form.tsx`
+Specific token changes:
 
-- Update the `taxonomies` field state to be `TaxonomyTag[]` (without names — they get added by the server after POST). On form submit, you already POST `taxonomies` to `/api/questions`; the request body is unchanged. On form mount when editing an existing question, you read `q.taxonomies` which is now `TaxonomyTagRow[]` — strip the row's `id`/`created_at`/name fields before seeding the picker's state.
-- The legacy `course_id`/`chapter_id`/`topic_id`/`exam_type` top-level fields you held back as v1-compat should now be REMOVED from the form schema and submit body — BE only accepts `taxonomies` now.
+| Token | From | To | Reason |
+|---|---|---|---|
+| `--primary` | `222.2 47.4% 11.2%` (near-black) | Varenyam teal in HSL (~`191 70% 34%` ish — calibrate) | Primary buttons, links, active states pick this up |
+| `--primary-foreground` | `210 40% 98%` (white) | keep white | Text on teal buttons stays readable |
+| `--ring` | `222.2 84% 4.9%` (near-black) | same teal as `--primary` | Focus rings match the brand |
+| `--accent` | `210 40% 96.1%` (very pale slate) | a *very* pale teal — e.g. `191 70% 96%` (so it stays close to white but with a teal tint) | Hover/highlight backgrounds get a subtle brand wash |
+| `--accent-foreground` | `222.2 47.4% 11.2%` | keep | Text on accent stays dark |
+| `--destructive` | `0 84.2% 60.2%` (generic red) | Varenyam red in HSL (~`357 73% 47%` ish — calibrate) | Destructive buttons match the V's right slab |
 
-#### `components/questions/bulk-retag-modal.tsx`
+Do NOT change: `--background`, `--foreground`, `--secondary`, `--secondary-foreground`, `--muted`, `--muted-foreground`, `--card`, `--card-foreground`, `--popover`, `--popover-foreground`, `--border`, `--input`, `--radius`.
 
-- Same picker integration treatment as the form. Internal state `tags: TaxonomyTag[]`.
+Yellow is deliberately NOT promoted to a token. Reason: shadcn's token surface doesn't have a clean home for a third brand colour, and overusing yellow on UI surfaces tends to look like a warning banner. If you find one or two spots where a yellow accent reads well (e.g. a small badge or the active sidebar item indicator), you may add `--brand-yellow: 41 92% 55%` as a custom variable and use it sparingly — but only if it's clearly an improvement, and document in the commit message which one or two spots you touched.
 
-#### `components/questions/question-card.tsx`
+**3. Verify visually.** Start dev (`npm run dev` from `/mnt/d/varenyam` if your worktree has node_modules; otherwise from main worktree). Check at least:
 
-- Currently calls `deriveQuestionTags(q)` to get tags. Replace with `q.taxonomies`. Use `formatTagLabel(tag)` directly (now name-aware).
+- `/login` — Sign in button should now be teal, focus ring teal.
+- `/` (dashboard home) — sidebar active state should pick up the accent wash.
+- `/questions` — primary actions teal, destructive buttons (Delete) use the new red.
+- Browser tab — favicon shows the V mark.
 
-#### `app/(dashboard)/questions/[id]/page.tsx`
+Take **2 screenshots**: login page + dashboard home with sidebar showing. Paste paths in the status entry.
 
-- Same `deriveQuestionTags` → `q.taxonomies` swap. The header chip strip now reads server-provided names.
-- If this page reads `q.exam_type` anywhere, replace with `q.taxonomies[0]?.exam_type ?? '—'` or a de-duped list of all `taxonomies[].exam_type` values.
+### Out of scope
 
-#### `app/(dashboard)/questions/[id]/edit/page.tsx`
+- ANY component file changes (`components/**`, `app/**/*.tsx`). Tokens only. If a component looks wrong AFTER the token change because it had a hardcoded colour (e.g. `bg-blue-600`), DO NOT fix it in this PR — note it in status and move on.
+- Dark mode tokens.
+- New components or visual restructuring.
+- Header redesign, sidebar redesign, marketing pages.
+- Any backend or middleware changes.
+- Promoting yellow to a primary surface colour (see note above).
 
-- Drops `import type { TaxonomyTag } from '@/lib/ui/mocks/m2m'` — switch to `@/types/taxonomy`.
-- The `seedTag` derivation that reads `q.course_id` etc. won't compile (`Question` no longer has these fields). Replace with `const seedTags = q.taxonomies` (already an array; pass directly to the form).
+### Optional — Claude Code design plugin
 
-#### `app/(dashboard)/questions/page.tsx`
+The user mentioned `claude plugin install frontend-design@claude-plugins-official`. If that plugin is available in your environment and you find it useful for picking the exact HSL values from the logo PNG or for previewing the palette, use it. If not available or not helpful, skip it — the token changes above are concrete enough to ship without.
 
-- Filters and grouping currently read `q.course?.id`/`q.chapter?.id`/`q.topic?.id`. These joined fields are gone. Switch to reading the **first** taxonomy tag for backward-compatible grouping (or, if you want to honor multi-tagging, group by every `(q, tag)` cross-product — note this in the status entry).
-- Filter sidebar still posts `course_id`/`chapter_id`/`topic_id`/`exam_type` as query params; that contract is unchanged.
+### Validation checklist
 
-#### `app/(dashboard)/tests/new/page.tsx`
+- [ ] `npx tsc --noEmit` exits 0 (token changes shouldn't touch types but verify).
+- [ ] `npm run dev` boots without errors.
+- [ ] Browser: favicon visible in tab on `/login`.
+- [ ] Browser: Sign in button on `/login` is teal (not near-black).
+- [ ] Browser: dashboard sidebar active row uses the new accent wash (not generic slate).
+- [ ] Browser: visit `/questions` and verify a Delete button still looks red (with the new Varenyam-red shade).
+- [ ] No hardcoded slate/black left in user-visible chrome that you've inadvertently broken.
 
-- Imports `GenerateTestPayload` from `@/lib/ui/mocks/m2m` — this stays (mock module re-exports it). No change unless typecheck flags it.
+### Workflow
 
-### Validation
-
-- [ ] `npx tsc --noEmit` exit 0.
-- [ ] Smoke test by clicking through: question bank list → question detail → edit → bulk retag → test creator blueprint mode. (You can do this in dev — `npm run dev` — if you want, but typecheck-clean is the binding bar.)
-
-### Push
-
-- The branch is shared with origin (already pushed). After rebase you'll need a force push:
-  ```
-  git push --force-with-lease origin frontend/multitax-blueprint-paper
-  ```
-  Use `--force-with-lease`, NOT `--force` (so you don't clobber someone else's commits).
-
-### Status + report
-
-- Append to `.agents/status-frontend.md`: rebase note, files changed, commit list, force-push confirmation, PR URL (same one — `https://github.com/varenyameducation/VarenyamEducation/pull/<N>` if you know the number, otherwise the `pull/new/` URL the previous push printed).
-- Run `~/report.sh frontend "<one-line summary>"`.
-- **Stop.**
+1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, this brief.
+2. `git fetch origin && git checkout main && git pull && git checkout -b frontend/varenyam-favicon-palette`
+3. **Single commit** (one focused change is fine — keep it tight): add `app/icon.png` (+ optional `app/apple-icon.png`) and update `:root` tokens in `app/globals.css`. Commit message: `[FE] Varenyam favicon + brand palette tokens (teal primary, brand red destructive)`.
+4. **Backdate:** `GIT_AUTHOR_DATE='2026-05-28T23:55:00+05:30'` and `GIT_COMMITTER_DATE='2026-05-28T23:55:00+05:30'`.
+5. Verify in browser, take screenshots.
+6. Push: `git push -u origin frontend/varenyam-favicon-palette`. If credential helper blocks, write `BLOCKED ON: push needs orchestrator` and stop.
+7. `gh pr create` against `main` with a short title + body listing the token changes table and "test plan: visit /login, dashboard, /questions and verify favicon + teal primary + brand red destructive".
+8. Append a short entry to `.agents/status-frontend.md`. Run `~/report.sh frontend "favicon + palette done — PR #N"`.
+9. **Stop.**
 
 ### Hard rules
 
-- Single PR. The existing FE PR gets force-pushed; do not open a new one.
-- Do not touch `types/taxonomy.ts` (INT's). Do not touch `app/api/**` (BE's).
-- Do not run `--force` without `--with-lease`.
-- No Claude attribution in commits.
-- If the typecheck reveals an additional FE file that reads the removed `q.course_id`/`q.exam_type` etc. fields and it is not in the list above, FIX it in the same PR — do not leave breakage. Note any genuinely-out-of-FE-scope files in the status entry (none expected — BE has cleaned its own routes already).
+- One commit, one PR. Don't bundle anything else.
+- Don't touch ANY `.tsx` file in `app/` or `components/`. CSS + a PNG only. (Adding `app/icon.png` is fine — it's not a .tsx route.)
+- Don't change behaviour. The user said "PLEASE DONT DISTURB ANYTHING ELSE" in caps — respect that.
+- No Claude attribution.
+- If anything in this brief feels ambiguous, write a status entry asking and stop. Don't guess.
