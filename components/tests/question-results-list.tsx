@@ -1,44 +1,19 @@
 'use client'
 
 import * as React from 'react'
-import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import { AlertCircle } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
-import { stripImagePlaceholders } from '@/lib/ui/render-body'
+import { renderBodyToHtml, stripImagePlaceholders } from '@/lib/ui/render-body'
 import type { Question } from '@/lib/ui/api'
 import type { DifficultyValue } from '@/lib/validation/question'
-
-const LATEX_TOKEN = /\\[a-zA-Z]+|[\$\^_{}]/
 
 const DIFFICULTY_STYLES: Record<DifficultyValue, string> = {
   easy: 'bg-emerald-100 text-emerald-700',
   medium: 'bg-amber-100 text-amber-800',
   hard: 'bg-orange-100 text-orange-700',
   advanced: 'bg-rose-100 text-rose-700',
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
-
-function renderInline(body: string): string {
-  if (!LATEX_TOKEN.test(body)) return escapeHtml(body)
-  try {
-    return katex.renderToString(body, {
-      throwOnError: false,
-      displayMode: false,
-      output: 'html',
-      strict: 'ignore',
-    })
-  } catch {
-    return escapeHtml(body)
-  }
 }
 
 function truncate(s: string, limit = 220): string {
@@ -127,7 +102,7 @@ export function QuestionResultsList({
                   <div
                     className="text-sm text-foreground/90"
                     dangerouslySetInnerHTML={{
-                      __html: renderInline(truncate(stripImagePlaceholders(q.question_body))),
+                      __html: renderBodyToHtml(truncate(stripImagePlaceholders(q.question_body))),
                     }}
                   />
                 </div>
