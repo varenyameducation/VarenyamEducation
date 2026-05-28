@@ -2,6 +2,14 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-28 — backend/docx-vision-and-hard-delete
+- DONE: two commits backdated to 2026-05-27 evening IST. `48274c7` [BE] Vision-extract LaTeX from embedded DOCX images when vision=true (new `lib/integrations/ai/extract-latex-from-image.ts` + DOCX wiring in `app/api/questions/import/route.ts` — referenced images only, `__DIAGRAM__` sentinel keeps real figures as URLs, per-image failure is non-fatal, two new envelope counters `vision_images_processed`/`vision_images_replaced` mirrored in audit meta). `e477c24` [BE] Hard-delete questions on DELETE /api/questions/[id] (preserves 409 if in any test) — transaction wraps junction `deleteMany` + `question.delete`, audit renamed `question.delete` → `question.hard_delete`, response shape `{id, deleted: true}`.
+- PUSHED: branch `origin/backend/docx-vision-and-hard-delete`. PR pending — `gh` CLI not on the worker shell.
+- VALIDATION: `npx tsc --noEmit` clean. Live smoke against the running dev server (JWT-signed admin cookie) for the hard-delete path:
+  - Path A (unused question): `DELETE /api/questions/<id>` → `HTTP 200 {"id":"<id>","deleted":true}`. Row physically gone (`prisma.question.findUnique` returns null). `question_taxonomies` count for that id → 0. Re-issue → `HTTP 404 QUESTION_NOT_FOUND`. ✓
+  - Path B (in-use question with a created test): `DELETE` → `HTTP 409 {"code":"QUESTION_IN_USE","message":"Question is used in one or more tests; remove from tests before deleting"}`. ✓ Fixtures cleaned up.
+- DOCX Vision path validation deferred to FE end-to-end smoke after merge (no DOCX with referenced screenshot images is staged in the test DB right now). The code path typechecks against INT's existing `geminiGenerateText` and the new helper is unit-runnable via `scripts/test-hard-delete-smoke.mjs`-style harness if a sample DOCX appears.
+
 ## 2026-05-27 — backend/hotfix-vision-external-packages (P1)
 - DONE: `61db5f0` [BE] Hotfix: externalize pdfjs-dist + pdf-to-img so Vision-PDF works — backdated 2026-05-18 20:00 IST. Pushed to `origin/backend/hotfix-vision-external-packages` (based on `main`; both prior hotfixes already merged as PR #38, #41). One-line config edit: added `experimental.serverComponentsExternalPackages: ['pdf-to-img', 'pdfjs-dist']` to `next.config.mjs`. Next 14.2 uses the `experimental.*` key (promoted to top-level `serverExternalPackages` in Next 15). No code changes in route.ts or render-pdf-pages.ts — hotfix #38's lazy import stays in place as defense-in-depth.
 - VERIFIED LIVE on the dev server (which auto-restarted on next.config change): JWT-signed super_admin POST of `/mnt/c/Users/HP/Downloads/65-S-1_Mathematics-7.pdf` with `vision=true`. Curl output verbatim:

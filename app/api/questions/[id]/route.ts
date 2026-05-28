@@ -206,24 +206,31 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
     })
   }
 
-  const now = new Date()
-  const deleted = await prisma.question.update({
-    where: { id: params.id },
-    data: { deleted_at: now },
-  })
+  // Hard delete — the row leaves the database for good. Cascade through
+  // the m2m taxonomy junction first so the FK doesn't block us when
+  // QuestionTaxonomy.question is declared with onDelete: Restrict; if it
+  // were Cascade, the deleteMany is harmless redundancy and the intent
+  // stays explicit.
+  await prisma.$transaction([
+    prisma.questionTaxonomy.deleteMany({ where: { question_id: params.id } }),
+    prisma.question.delete({ where: { id: params.id } }),
+  ])
 
   await logAudit({
     user_id: auth.user.id,
-    action: 'question.delete',
+    // `question.hard_delete` (vs the prior `question.delete`) so soft-
+    // deletes that pre-date this change stay distinguishable in audit
+    // logs.
+    action: 'question.hard_delete',
     entity_type: 'question',
     entity_id: params.id,
     meta: {
       actor_role: auth.payload.role,
-      question_type: deleted.question_type,
-      subject: deleted.subject,
+      question_type: existing.question_type,
+      subject: existing.subject,
     },
     ip_address: getClientIp(request),
   })
 
-  return ok({ id: params.id, deleted_at: now })
+  return ok({ id: params.id, deleted: true })
 }

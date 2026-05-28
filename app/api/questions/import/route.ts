@@ -22,6 +22,10 @@ import {
 import { normalizeMathToLatex } from '@/lib/integrations/document/normalize-math-to-latex'
 import { parseQuestionsFromImage } from '@/lib/integrations/ai/parse-questions-from-image'
 import { GeminiError } from '@/lib/integrations/ai/gemini'
+import {
+  extractLatexFromImage,
+  type LatexExtractMime,
+} from '@/lib/integrations/ai/extract-latex-from-image'
 import { questionCreateSchema } from '@/lib/validation/question'
 
 const MAX_FILE_BYTES = 20 * 1024 * 1024
@@ -260,6 +264,59 @@ async function handleDocumentImport(
     })
   }
 
+  // Opt-in Gemini Vision pass for embedded DOCX images. When the user
+  // ticks "use AI" on the import page (form field vision='true') and
+  // we're importing a DOCX, run each REFERENCED image (i.e. images that
+  // any question_body actually points at via `[[IMG:filename]]`) through
+  // the LaTeX-extraction prompt. If Gemini returns LaTeX, the placeholder
+  // is replaced inline; if it returns the __DIAGRAM__ sentinel (real
+  // figure), the placeholder stays as-is and the image renders normally.
+  // Decorative header images that no question references are skipped to
+  // save tokens.
+  const latexByFilename = new Map<string, string>()
+  let visionImagesProcessed = 0
+  let visionImagesReplaced = 0
+  const useVision = form.get('vision') === 'true'
+  if (kind === 'docx' && useVision && docxImages.length > 0) {
+    const referencedFilenames = new Set<string>()
+    const placeholderRe = /\[\[IMG:([^\]]+)\]\]/g
+    for (const q of parsed.questions) {
+      let m: RegExpExecArray | null
+      while ((m = placeholderRe.exec(q.question_body))) {
+        referencedFilenames.add(m[1])
+      }
+    }
+    const geminiMimes: ReadonlySet<string> = new Set([
+      'image/png',
+      'image/jpeg',
+      'image/webp',
+    ])
+    for (const img of docxImages) {
+      if (!referencedFilenames.has(img.filename)) continue
+      if (!geminiMimes.has(img.contentType)) continue
+      visionImagesProcessed += 1
+      try {
+        const result = await extractLatexFromImage(
+          img.data,
+          img.contentType as LatexExtractMime,
+        )
+        if (result.isDiagram || result.text.length === 0) continue
+        latexByFilename.set(img.filename, result.text)
+        visionImagesReplaced += 1
+      } catch (e) {
+        // Per brief: a failed image doesn't fail the import. Keep the
+        // original [[IMG:url]] placeholder so the user still sees the
+        // screenshot, surface a non-fatal error for visibility.
+        const code = e instanceof GeminiError ? e.code : 'UNKNOWN'
+        const msg = e instanceof Error ? e.message : 'unknown error'
+        errors.push({
+          row: null,
+          reason: `Vision extract failed for ${img.filename}: ${code} — ${msg}`,
+        })
+      }
+    }
+  }
+
   type Pending = {
     questionNo: number | null
     data: Prisma.QuestionUncheckedCreateInput
@@ -270,10 +327,13 @@ async function handleDocumentImport(
 
   for (const q of parsed.questions) {
     // Replace [[IMG:filename]] placeholders with [[IMG:<url>]] so the renderer
-    // gets a direct URL, and collect those URLs into image_urls.
+    // gets a direct URL, and collect those URLs into image_urls. When the
+    // Vision pass produced LaTeX for a referenced image, that LaTeX replaces
+    // the placeholder entirely (no URL emitted for that image).
     const { rewritten, urls } = rewriteImagePlaceholders(
       q.question_body,
       imageUrlByFilename,
+      latexByFilename,
     )
     const qForCreate = { ...q, question_body: rewritten }
     const candidate = buildCandidate(qForCreate, defaults)
@@ -396,6 +456,8 @@ async function handleDocumentImport(
       failed: errors.length,
       file_name: file.name,
       detected_topic: parsed.header.topic ?? null,
+      vision_images_processed: visionImagesProcessed,
+      vision_images_replaced: visionImagesReplaced,
     },
     ip_address: getClientIp(request),
   })
@@ -406,6 +468,8 @@ async function handleDocumentImport(
     subjective_count: subjectiveCount,
     errors,
     header: parsed.header,
+    vision_images_processed: visionImagesProcessed,
+    vision_images_replaced: visionImagesReplaced,
     note:
       'MCQs imported without a correct answer marked — review each question in the Question Bank to set the actual answer. is_verified = false on all imports.',
   })
@@ -414,9 +478,16 @@ async function handleDocumentImport(
 function rewriteImagePlaceholders(
   body: string,
   byFilename: Map<string, string>,
+  latexByFilename?: Map<string, string>,
 ): { rewritten: string; urls: string[] } {
   const urls: string[] = []
   const rewritten = body.replace(/\[\[IMG:([^\]]+)\]\]/g, (full, filename: string) => {
+    // Vision-extracted LaTeX takes precedence over the storage URL —
+    // the image becomes inline math instead of a screenshot.
+    if (latexByFilename) {
+      const latex = latexByFilename.get(filename)
+      if (latex) return latex
+    }
     const url = byFilename.get(filename)
     if (!url) return ''
     urls.push(url)
