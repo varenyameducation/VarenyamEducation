@@ -2,6 +2,9 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-28 15:00 — integration/drop-answer-detection (rebase)
+- DONE: Rebased onto current `origin/main` (which now includes `integration/lenient-gemini-json-parse` + recent BE/FE hotfix merges). Conflict in `parse-question-image.ts` `correct_option` line resolved by keeping the strict "ALWAYS return []" prompt from this branch alongside the lenientJsonParse import + the backslash-doubling IMPORTANT line from main (both compatible — "take both"). `parse-questions-from-image.ts` auto-merged. Status file conflict resolved by keeping all entries from both ancestors. `npx tsc --noEmit` clean. Force-pushed-with-lease.
+
 ## 2026-05-27 19:00 — integration/lenient-gemini-json-parse
 - DONE: Tolerant JSON parser for Gemini-Vision LaTeX responses. Unblocks the `502 BAD_RESPONSE` BE caught smoke-testing the Vision PDF import path — Gemini's `responseMimeType:'application/json'` mode emits LaTeX strings with single backslashes (e.g. `"\(x = t^3\)"`, `"\frac{a}{b}"`) which strict `JSON.parse` rejects because `\(` is not a valid JSON escape and `\frac` decodes `\f` as form-feed.
   - `lib/integrations/ai/json-utils.ts` (new): `lenientJsonParse<T>(raw): T` — strict parse first (zero overhead on well-formed input); on `SyntaxError`, double every backslash NOT already followed by `\` or `u` via `raw.replace(/\\(?![\\u])/g, '\\\\')` and retry; if still failing, rethrow the **original** error so the message stays actionable. Preserves already-escaped pairs and `\uXXXX` unicode escapes.
@@ -28,6 +31,21 @@ _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
   - No API surface change. `parseQuestionFromImage` / `parseQuestionsFromImage` still return `{ parsed, usage }` with the same Zod-validated shape. Existing call-sites in `app/api/questions/import/route.ts` and `app/api/questions/parse-image/route.ts` need no changes — just rebase or merge `integration/lenient-gemini-json-parse` into main and the bug disappears.
   - Layers cleanly on top of `integration/drop-answer-detection` (the prior `correct_option` prompt patch) — touches different lines; merge order is irrelevant.
   - `lib/integrations/ai/gemini.ts` (the low-level fetch wrapper) and the Zod schemas were not touched — fix is upstream of validation, downstream of transport.
+
+## 2026-05-27 16:00 — integration/drop-answer-detection
+- DONE: Two-line prompt patch — both Gemini Vision helpers now instruct the model to ALWAYS return `correct_option: []`, ignoring ticks / asterisks / "Ans:" markings.
+  - `lib/integrations/ai/parse-question-image.ts` — single-question prompt updated.
+  - `lib/integrations/ai/parse-questions-from-image.ts` — multi-question prompt updated.
+  - Zod schemas, helper signatures, return shapes, and `gemini.ts` all unchanged.
+- Commit:
+  - `fd93434` [INT] Drop answer-detection from Gemini Vision prompts (backdated `2026-05-17T20:00:00+05:30` — that day had 1 commit, well under cap).
+- PR: pending — branch pushed to `origin/integration/drop-answer-detection`. https://github.com/varenyameducation/VarenyamEducation/pull/new/integration/drop-answer-detection
+- BLOCKED ON: none.
+- NOTES:
+  - Smoke (`scripts/test-gemini-multi.mjs` against logo PNG): `parsed: []`, `totalTokens: 705` — wire healthy. Token count nudged slightly up from `668` on the pre-patch prompt (longer instruction text); the trade-off is a smaller hallucination surface, which the user explicitly asked for.
+  - Schemas left lenient (`correct_option: z.array(z.enum(...)).default([])`) on purpose — if Gemini hallucinates a non-empty value despite the instruction, Zod still accepts and BE discards downstream rather than 422-ing the whole page.
+  - No BE-facing API contract change. Existing consumers of `parseQuestionFromImage` / `parseQuestionsFromImage` keep working unchanged; the only behavioural shift is that `correct_option` is now always `[]` on the wire.
+- `npx tsc --noEmit` clean for integration scope.
 
 ## 2026-05-27 11:30 — integration/multi-question-vision
 - DONE: Multi-question Gemini Vision helper for the bulk PDF/DOCX import sprint. Single-question helper (`parseQuestionFromImage`) untouched and still exported.

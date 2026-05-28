@@ -38,7 +38,7 @@ Rules:
 - Convert ALL math notation to LaTeX. Wrap inline math in \\( ... \\) and display math in \\[ ... \\]. Keep prose as plain text.
 - Detect MCQs by the (A) (B) (C) (D) option pattern. If MCQ, populate options with exactly 4 strings (preserve A/B/C/D order). If not MCQ, set options to [].
 - question_type: 'mcq' if 4-option choice; 'numerical' if the answer is a numeric value (e.g. "find the value of x"); 'subjective' for everything else (descriptive answer).
-- correct_option: leave [] unless the image explicitly marks the correct one with a tick, asterisk, or "Ans:" prefix.
+- correct_option: ALWAYS return [] (an empty array). Do NOT try to detect or infer the correct answer from the image. Even if the image marks an answer with a tick, asterisk, or "Ans:" prefix, ignore it and return [].
 - SKIP non-question content: page headers, page numbers ("Page 7 of 23"), paper codes ("65/S/1"), instructions blocks ("All questions are compulsory"), section labels by themselves ("Section A"), running watermarks. Only extract things that are actual answerable questions.
 - If the page contains zero questions, return {"questions": []}.
 - IMPORTANT: All backslashes in LaTeX MUST be doubled in the JSON output. Write \\(, \\frac{a}{b}, \\sqrt{x} — NOT \(, \frac{a}{b}, \sqrt{x}. Single backslashes are invalid JSON escapes.
