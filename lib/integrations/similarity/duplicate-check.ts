@@ -100,3 +100,66 @@ export async function findSimilar(
   matches.sort((a, b) => b.similarity - a.similarity)
   return matches
 }
+
+export type DuplicateChecker = (body: string) => SimilarMatch | null
+
+// Pre-loads all candidate questions in the given taxonomy scope and returns
+// a synchronous `check(body)` function that returns the single best match
+// above `threshold`, or null. Use this in bulk-import paths where you'd
+// otherwise call findSimilar() per parsed question — one DB round-trip
+// instead of N. Also dedupes within the import itself, so two identical
+// questions inside the same file don't both get inserted.
+export async function createDuplicateChecker(
+  prisma: PrismaLike,
+  options: FindSimilarOptions = {},
+  threshold = 0.9,
+): Promise<DuplicateChecker> {
+  const existing = await prisma.question.findMany({
+    where: buildWhere(options),
+    select: { id: true, question_body: true },
+  })
+  const candidates = existing
+    .map((r) => ({
+      id: r.id,
+      question_body: r.question_body,
+      normalized: normaliseForCompare(r.question_body),
+    }))
+    .filter((c) => c.normalized.length > 0)
+
+  // Track normalised bodies we've already accepted during THIS import run so
+  // two identical questions inside the same file collapse to one row.
+  const seenThisRun: { id: string; question_body: string; normalized: string }[] = []
+
+  return (body: string): SimilarMatch | null => {
+    const target = normaliseForCompare(body)
+    if (!target) return null
+
+    let best: SimilarMatch | null = null
+    for (const c of candidates) {
+      const sim = trigramSimilarity(target, c.normalized)
+      if (sim >= threshold && (!best || sim > best.similarity)) {
+        best = { id: c.id, question_body: c.question_body, similarity: sim }
+      }
+    }
+    if (best) return best
+
+    for (const c of seenThisRun) {
+      const sim = trigramSimilarity(target, c.normalized)
+      if (sim >= threshold && (!best || sim > best.similarity)) {
+        best = { id: c.id, question_body: c.question_body, similarity: sim }
+      }
+    }
+    if (best) return best
+
+    // First sighting — register so later imports in the same run dedupe
+    // against it. The id is a sentinel marker; callers receive it only when
+    // a later import matches it (and we want them to know it was an
+    // in-run duplicate, so they can word the error differently).
+    seenThisRun.push({
+      id: '__in_run__',
+      question_body: body,
+      normalized: target,
+    })
+    return null
+  }
+}

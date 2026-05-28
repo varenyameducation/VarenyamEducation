@@ -24,6 +24,10 @@ import { parseQuestionsFromImage } from '@/lib/integrations/ai/parse-questions-f
 import { parseQuestionsFromDocxText } from '@/lib/integrations/ai/parse-questions-from-docx-text'
 import { GeminiError } from '@/lib/integrations/ai/gemini'
 import {
+  createDuplicateChecker,
+  type DuplicateChecker,
+} from '@/lib/integrations/similarity/duplicate-check'
+import {
   extractLatexFromImage,
   type LatexExtractMime,
 } from '@/lib/integrations/ai/extract-latex-from-image'
@@ -374,6 +378,16 @@ async function handleDocumentImport(
   const pending: Pending[] = []
   let mcqCount = 0
   let subjectiveCount = 0
+  let skippedDuplicates = 0
+
+  // Pre-load existing questions in this course+chapter scope so we can
+  // skip near-identical re-imports without hitting the DB per row. The
+  // checker also dedupes within the current import (two identical
+  // questions inside the same file get collapsed).
+  const checkDuplicate = await createDuplicateChecker(prisma, {
+    course_id: defaults.course_id,
+    chapter_id: defaults.chapter_id,
+  })
 
   for (const q of parsed.questions) {
     // Replace [[IMG:filename]] placeholders with [[IMG:<url>]] so the renderer
@@ -416,6 +430,15 @@ async function handleDocumentImport(
       continue
     }
     const v = validated.data
+    const dup = checkDuplicate(v.question_body)
+    if (dup) {
+      skippedDuplicates += 1
+      errors.push({
+        row: q.question_no,
+        reason: formatDuplicateReason(dup),
+      })
+      continue
+    }
     if (v.question_type === 'mcq') {
       mcqCount += 1
       pending.push({
@@ -512,6 +535,7 @@ async function handleDocumentImport(
       vision_text_tokens: visionTextTokens,
       vision_text_images_attached: visionTextImagesAttached,
       vision_text_error: visionTextError?.code ?? null,
+      skipped_duplicates: skippedDuplicates,
     },
     ip_address: getClientIp(request),
   })
@@ -528,9 +552,23 @@ async function handleDocumentImport(
     vision_text_tokens: visionTextTokens,
     vision_text_images_attached: visionTextImagesAttached,
     vision_text_error: visionTextError,
+    skipped_duplicates: skippedDuplicates,
     note:
       'MCQs imported without a correct answer marked — review each question in the Question Bank to set the actual answer. is_verified = false on all imports.',
   })
+}
+
+function formatDuplicateReason(dup: {
+  id: string
+  question_body: string
+  similarity: number
+}): string {
+  const sim = dup.similarity.toFixed(2)
+  if (dup.id === '__in_run__') {
+    return `Duplicate of an earlier row in this import (similarity ${sim}) — not imported. Delete the earlier duplicate or remove this row from the source file.`
+  }
+  const short = dup.id.slice(0, 8)
+  return `Duplicate of existing question ${short}… (similarity ${sim}) — not imported. Delete the existing question first if you want to replace it.`
 }
 
 function rewriteImagePlaceholders(
@@ -695,6 +733,24 @@ async function handleXlsxImport(
   const pending: Pending[] = []
   const uploadedPaths: string[] = []
   const supabase = imagesMap.size > 0 ? createSupabaseServerClient() : null
+  let skippedDuplicates = 0
+
+  // XLSX rows can target different course+chapter combos, so we lazy-build
+  // a checker per unique scope and cache. For a 200-row sheet that all
+  // points at the same chapter this is one DB query total; for a sheet
+  // spread across 10 chapters it's 10.
+  const dupCheckerByScope = new Map<string, DuplicateChecker>()
+  async function getChecker(courseId: string, chapterId: string): Promise<DuplicateChecker> {
+    const key = `${courseId}::${chapterId}`
+    const cached = dupCheckerByScope.get(key)
+    if (cached) return cached
+    const checker = await createDuplicateChecker(prisma, {
+      course_id: courseId,
+      chapter_id: chapterId,
+    })
+    dupCheckerByScope.set(key, checker)
+    return checker
+  }
 
   for (let i = 0; i < parsed.rows.length; i++) {
     const row: ParsedRow = parsed.rows[i]
@@ -822,6 +878,14 @@ async function handleXlsxImport(
       data.matrix_answer = v.matrix_answer as Prisma.InputJsonValue
     }
 
+    const checkDup = await getChecker(courseId, chapterId)
+    const dup = checkDup(v.question_body)
+    if (dup) {
+      skippedDuplicates += 1
+      errors.push({ row: rowNumber, reason: formatDuplicateReason(dup) })
+      continue
+    }
+
     pending.push({
       rowNumber,
       data,
@@ -871,11 +935,12 @@ async function handleXlsxImport(
       failed: errors.length,
       file_name: file.name,
       has_images: Boolean(imagesFile),
+      skipped_duplicates: skippedDuplicates,
     },
     ip_address: getClientIp(request),
   })
 
-  return ok({ imported, errors })
+  return ok({ imported, errors, skipped_duplicates: skippedDuplicates })
 }
 
 // ─── Image import (single Gemini Vision call) ───────────────────────────────
@@ -1025,6 +1090,12 @@ async function handleImageImport(
   const errors: ImportError[] = []
   let mcqCount = 0
   let subjectiveCount = 0
+  let skippedDuplicates = 0
+
+  const checkDuplicate = await createDuplicateChecker(prisma, {
+    course_id: defaults.course_id,
+    chapter_id: defaults.chapter_id,
+  })
 
   for (let i = 0; i < result.parsed.length; i++) {
     const q = result.parsed[i]
@@ -1034,6 +1105,12 @@ async function handleImageImport(
         row: i + 1,
         reason: `Question ${i + 1}: MCQ returned ${q.options.length} options (need 4) — skipped`,
       })
+      continue
+    }
+    const dup = checkDuplicate(q.question_body)
+    if (dup) {
+      skippedDuplicates += 1
+      errors.push({ row: i + 1, reason: formatDuplicateReason(dup) })
       continue
     }
     let data: Prisma.QuestionUncheckedCreateInput
@@ -1140,6 +1217,7 @@ async function handleImageImport(
       total_tokens: result.usage.totalTokens,
       failed: errors.length,
       file_name: file.name,
+      skipped_duplicates: skippedDuplicates,
     },
     ip_address: getClientIp(request),
   })
@@ -1150,6 +1228,7 @@ async function handleImageImport(
     subjective_count: subjectiveCount,
     total_tokens: result.usage.totalTokens,
     errors,
+    skipped_duplicates: skippedDuplicates,
     note:
       'MCQs imported without a correct answer marked — review each question in the Question Bank to set the actual answer. is_verified = false on all imports.',
   })
@@ -1211,6 +1290,12 @@ async function handlePdfVisionImport(
   let totalTokens = 0
   let mcqCount = 0
   let subjectiveCount = 0
+  let skippedDuplicates = 0
+
+  const checkDuplicate = await createDuplicateChecker(prisma, {
+    course_id: defaults.course_id,
+    chapter_id: defaults.chapter_id,
+  })
 
   for (let i = 0; i < rendered.pages.length; i++) {
     const page = rendered.pages[i]
@@ -1246,6 +1331,12 @@ async function handlePdfVisionImport(
           row: page.pageNumber,
           reason: `Page ${page.pageNumber}: MCQ returned ${q.options.length} options (need 4) — skipped`,
         })
+        continue
+      }
+      const dup = checkDuplicate(q.question_body)
+      if (dup) {
+        skippedDuplicates += 1
+        errors.push({ row: page.pageNumber, reason: formatDuplicateReason(dup) })
         continue
       }
       let data: Prisma.QuestionUncheckedCreateInput
@@ -1349,6 +1440,7 @@ async function handlePdfVisionImport(
       total_tokens: totalTokens,
       failed: errors.length,
       file_name: file.name,
+      skipped_duplicates: skippedDuplicates,
     },
     ip_address: getClientIp(request),
   })
@@ -1361,6 +1453,7 @@ async function handlePdfVisionImport(
     total_pages_in_doc: rendered.totalPagesInDoc,
     total_tokens: totalTokens,
     errors,
+    skipped_duplicates: skippedDuplicates,
     note:
       rendered.totalPagesInDoc > rendered.pages.length
         ? `Imported pages 1–${rendered.pages.length} of ${rendered.totalPagesInDoc}; re-upload the rest as a follow-up. MCQs imported without a correct answer marked — review each in the Question Bank.`

@@ -38,6 +38,7 @@ interface ImportResult {
   vision_text_tokens?: number
   vision_text_images_attached?: number
   vision_text_error?: { code: string; message: string } | null
+  skipped_duplicates?: number
   errors: ImportError[]
   note?: string
   header?: { topic?: string | null; time_minutes?: number | null; total_marks?: number | null }
@@ -616,6 +617,22 @@ export default function ImportQuestionsPage() {
                 : ''}
             </p>
           )}
+
+          {typeof result.skipped_duplicates === 'number' &&
+            result.skipped_duplicates > 0 && (
+              <p className="flex items-start gap-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>
+                  {result.skipped_duplicates} question
+                  {result.skipped_duplicates === 1 ? '' : 's'} skipped as
+                  duplicate
+                  {result.skipped_duplicates === 1 ? '' : 's'} of existing
+                  rows in the question bank. See the error CSV for the
+                  matched IDs and similarity scores. Delete the existing
+                  question(s) first if you want to replace them.
+                </span>
+              </p>
+            )}
 
           {!result.vision_text_used && result.vision_text_error && (
             <p className="flex items-start gap-2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900">
