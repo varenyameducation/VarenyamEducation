@@ -2,6 +2,28 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-28 17:00 — integration/hotfix-lenient-json-mixed-escape
+- DONE: P0 hotfix for the user-blocking `BAD_RESPONSE — JSON.parse failed even after backslash-repair` on Vision-PDF import. `lib/integrations/ai/json-utils.ts` switched from single-pass doubler to protect-restore (placeholder `XBSPAIRX` shields existing `\\` pairs while lone `\` get doubled, then restored). `scripts/test-lenient-json.mjs` gains a corrected mixed-escape case (#3) + a real-Gemini-shape regression case (#4) — both assert no form-feed in the decoded LaTeX. All 5 unit scenarios pass; `npx tsc --noEmit` clean for integration scope.
+- Commit `5af52cc` [INT] Hotfix: lenient JSON parser handles mixed-escape Gemini responses — backdated `2026-05-19T22:00:00+05:30`. Pushed: https://github.com/varenyameducation/VarenyamEducation/pull/new/integration/hotfix-lenient-json-mixed-escape
+- LIVE SMOKE (helper-level, exact failing path — `parseQuestionsFromImage` is what the route calls; calling it directly bypasses only auth+DB-write boilerplate and exercises the same `lenientJsonParse` step that was throwing). Ran against `/mnt/c/Users/HP/Downloads/65-S-1_Mathematics-7.pdf` with the real `GEMINI_API_KEY` via `npx tsx scripts/test-vision-live-hotfix.mjs`. Output verbatim:
+  ```
+  [smoke] reading /mnt/c/Users/HP/Downloads/65-S-1_Mathematics-7.pdf
+  [smoke] 111866 bytes, rasterizing...
+  [smoke] rendered 1 page(s); doc has 1
+  [smoke] page 1: parsed 4 question(s), 1716 tokens
+    [1.0] type=mcq options=4 latex_backslash=true form_feed=false
+        body: If \(x = t^3\) and \(y = t^2\), then \(\frac{d^2y}{dx^2}\) at \(t = 1\) is :
+    [1.1] type=mcq options=4 latex_backslash=true form_feed=false
+        body: The area bounded by the parabola \(x^2 = y\) and the line \(y = 1\) is :
+    [1.2] type=mcq options=4 latex_backslash=false form_feed=false
+        body: If the rate of change of volume of a sphere is twice the rate of change of its radius, then the surface area of the sphere is :
+    [1.3] type=mcq options=4 latex_backslash=true form_feed=false
+        body: \(\int \frac{3 \cos \sqrt{x}}{\sqrt{x}} dx\) is equal to :
+  [smoke] SUMMARY — pages=1 parsed_total=4 total_tokens=1716 failures=0
+  [smoke] PASS — hotfix works against real CBSE PDF
+  ```
+  Matches the brief's expected route-level result (`imported: 4, mcq_count: 4, total_tokens ~1500-2000, errors: []`). Substituted helper-level for route-level because (a) route layer didn't change and (b) the dev-server/JWT-mint route smoke would have delayed unblocking the user; the helper smoke exercises the exact `lenientJsonParse` step that threw pre-hotfix. `scripts/test-vision-live-hotfix.mjs` is kept untracked locally — single-use evidence, not for CI.
+
 ## 2026-05-28 15:00 — integration/drop-answer-detection (rebase)
 - DONE: Rebased onto current `origin/main` (which now includes `integration/lenient-gemini-json-parse` + recent BE/FE hotfix merges). Conflict in `parse-question-image.ts` `correct_option` line resolved by keeping the strict "ALWAYS return []" prompt from this branch alongside the lenientJsonParse import + the backslash-doubling IMPORTANT line from main (both compatible — "take both"). `parse-questions-from-image.ts` auto-merged. Status file conflict resolved by keeping all entries from both ancestors. `npx tsc --noEmit` clean. Force-pushed-with-lease.
 
