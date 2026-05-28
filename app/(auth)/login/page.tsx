@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { Suspense, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -34,6 +34,33 @@ const loginSchema = z.object({
 type LoginValues = z.infer<typeof loginSchema>
 
 export default function LoginPage() {
+  // useSearchParams() forces a CSR bailout at build time; without a
+  // Suspense boundary Next 14's static prerender of the page shell
+  // errors out with "should be wrapped in a suspense boundary".
+  return (
+    <Suspense fallback={<LoginCardFallback />}>
+      <LoginPageInner />
+    </Suspense>
+  )
+}
+
+function LoginCardFallback() {
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-muted/30 px-4 py-12">
+      <Card className="w-full max-w-md">
+        <CardHeader className="space-y-2 text-center">
+          <CardTitle>Sign in to Varenyam</CardTitle>
+          <CardDescription>Access your question bank and tests</CardDescription>
+        </CardHeader>
+        <CardContent className="text-center text-sm text-muted-foreground">
+          Loading…
+        </CardContent>
+      </Card>
+    </main>
+  )
+}
+
+function LoginPageInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const initialError =
