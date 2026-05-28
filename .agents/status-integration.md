@@ -2,6 +2,9 @@
 
 _Append-only. Most recent entry on top. Format defined in `PROTOCOL.md`._
 
+## 2026-05-28 15:00 — integration/drop-answer-detection (rebase)
+- DONE: Rebased onto current `origin/main` (which now includes `integration/lenient-gemini-json-parse` + recent BE/FE hotfix merges). Conflict in `parse-question-image.ts` `correct_option` line resolved by keeping the strict "ALWAYS return []" prompt from this branch alongside the lenientJsonParse import + the backslash-doubling IMPORTANT line from main (both compatible — "take both"). `parse-questions-from-image.ts` auto-merged. Status file conflict resolved by keeping all entries from both ancestors. `npx tsc --noEmit` clean. Force-pushed-with-lease.
+
 ## 2026-05-27 19:00 — integration/lenient-gemini-json-parse
 - DONE: Tolerant JSON parser for Gemini-Vision LaTeX responses. Unblocks the `502 BAD_RESPONSE` BE caught smoke-testing the Vision PDF import path — Gemini's `responseMimeType:'application/json'` mode emits LaTeX strings with single backslashes (e.g. `"\(x = t^3\)"`, `"\frac{a}{b}"`) which strict `JSON.parse` rejects because `\(` is not a valid JSON escape and `\frac` decodes `\f` as form-feed.
   - `lib/integrations/ai/json-utils.ts` (new): `lenientJsonParse<T>(raw): T` — strict parse first (zero overhead on well-formed input); on `SyntaxError`, double every backslash NOT already followed by `\` or `u` via `raw.replace(/\\(?![\\u])/g, '\\\\')` and retry; if still failing, rethrow the **original** error so the message stays actionable. Preserves already-escaped pairs and `\uXXXX` unicode escapes.
