@@ -7,6 +7,13 @@ import { isAuthFailure, requireAuth } from '@/lib/api/taxonomy'
 import { getClientIp } from '@/lib/api/questions'
 import { sanitizeTitleForFilename } from '@/lib/api/tests'
 
+// Vercel's default function timeout (10 s) is shorter than @sparticuz
+// chromium's cold-start + multi-page render of a typical exam paper.
+// 60 s is the Hobby-plan ceiling and comfortably covers ~20-page papers.
+export const maxDuration = 60
+// Avoid edge runtime — puppeteer-core + chromium need full Node APIs.
+export const runtime = 'nodejs'
+
 const idSchema = z.string().uuid()
 
 type RouteContext = { params: { id: string } }
