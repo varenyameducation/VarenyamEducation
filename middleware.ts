@@ -3,10 +3,8 @@ import { verifyJWTEdge } from '@/lib/auth/jwt-edge'
 
 const PUBLIC_ROUTES = new Set([
   '/login',
-  '/setup',
   '/api/auth/login',
   '/api/auth/refresh',
-  '/api/auth/setup-super-admin',
 ])
 
 export async function middleware(request: NextRequest) {
