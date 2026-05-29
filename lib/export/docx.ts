@@ -20,6 +20,7 @@ import {
 } from 'docx'
 import katex from 'katex'
 import { mml2omml } from 'mathml2omml'
+import JSZip from 'jszip'
 import sharp from 'sharp'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -674,5 +675,22 @@ export async function generateTestDOCX(testId: string): Promise<Buffer> {
   }
 
   const doc = new Document({ sections: [section] })
-  return Packer.toBuffer(doc) as Promise<Buffer>
+  const buf = await Packer.toBuffer(doc)
+
+  // docx 9.7.1's ImportedXmlComponent wraps each imported OMath root in an
+  // invalid <undefined>...</undefined> element — its xml-js parser fails to
+  // derive a rootKey for the namespace-prefixed <m:oMath> tag, so the wrapper
+  // key comes out as the literal string "undefined". Word's stricter OOXML
+  // validator rejects that ("Word experienced an error trying to open the
+  // file"), even though the XML is otherwise well-formed. Stripping xmlns from
+  // the imported root did NOT help (the mis-parse is on the tag name, not the
+  // attributes), so we post-process the packed zip: drop the bogus wrapper
+  // tags from word/document.xml. The <m:oMath> then sits directly inside its
+  // <w:p>, which is valid OOXML. The regex only matches the literal element
+  // tags docx emits — any "undefined" in real text content is either the bare
+  // word (no angle brackets) or XML-escaped, so it's untouched.
+  const zip = await JSZip.loadAsync(buf)
+  const docXml = await zip.file('word/document.xml')!.async('string')
+  zip.file('word/document.xml', docXml.replace(/<\/?undefined>/g, ''))
+  return Buffer.from(await zip.generateAsync({ type: 'nodebuffer' }))
 }
