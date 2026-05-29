@@ -13,196 +13,199 @@ If either is wrong, fix before committing.
 
 ---
 
-## Current Task — REWORK both export paths (DOCX math + PDF chromium)
+## Current Task — REWORK math rendering: native in both formats
 
-**Severity: P0 — production exports are broken in two distinct ways.** After five failed @sparticuz/chromium hotfixes, orchestrator stopped iterating on Vercel-bundled chromium and inspected an actual DOCX produced from production. Both issues are now precisely diagnosed:
+User merged the previous rework. Both new issues surfaced:
 
-1. **DOCX**: all math content silently disappears (proven by inspecting `test-jee-test.docx` — text runs surrounding LaTeX delimiters survive, math segments vanish without even a fallback text). Root cause: `lib/export/docx.ts:67-89 renderLatexToPng()` wraps katex MathML output in `<foreignObject>` inside an SVG, then asks `sharp` to rasterize it. **libvips (sharp's engine) does not support `<foreignObject>`** — it produces a zero-content PNG without throwing, so the `try/catch` in `mathImageRun` never triggers the fallback. The DOCX gets an `ImageRun` with empty data → Word renders nothing.
+**Issue 1 — PDF**: `ENOENT: no such file or directory, open '/var/task/node_modules/katex/dist/katex.min.css'`. Vercel's function tracer didn't ship the KaTeX CSS file. Browserless never gets the stylesheet → 500.
 
-2. **PDF**: 5 attempts on `@sparticuz/chromium` (v119, v121, v131, chromium-min runtime download, Node 20 pin) all failed with the same `libnss3.so: cannot open shared object file`. Confirmed not Node-version-related. The conclusion: Vercel's Lambda image doesn't ship the system libs chromium dynamically links, and the @sparticuz/chromium-min tarball does NOT bundle them either. We are giving up on in-bundle chromium and switching to **Browserless.io** (managed Puppeteer service) — the canonical solution for puppeteer-on-Vercel.
+**Issue 2 — DOCX**: the MathJax-SVG-to-PNG approach you just shipped DOES produce visible math now (32 PNGs embedded, ~600-6000 B each), but the user is explicitly rejecting the image approach:
+> "this time the document had really big maths letters are u rendering them as images or as HTML only? i want them as HTML only not in images format, please remove this blunder"
 
-Two tracks, one branch, two commits, one PR.
+They're right. Native Word math (OOXML OMath) is the correct format — scales with font, editable in Word's equation editor, no pixelation, no oversize images. The image approach was a workaround; OMath is the real fix.
+
+Two tracks, one branch, two commits, one PR. Both ship the actual right answer this time, not another workaround.
 
 ---
 
-## Track A — DOCX: swap math renderer from katex+foreignObject to MathJax SVG
+## Track A — PDF: load KaTeX CSS from CDN instead of disk
 
-### Diagnosis recap
+### Diagnosis
 
-Verified via Python unzip + XML inspection of an actual production DOCX. Math segments produce neither images nor fallback text — they're invisible. The current code:
-
-```ts
-// lib/export/docx.ts:67-89
-const mathHtml = katex.renderToString(latex, { output: 'mathml', ... })
-const svg = `<svg ...><foreignObject>${mathHtml}</foreignObject></svg>`
-return sharp(Buffer.from(svg)).png().toBuffer()   // libvips can't render foreignObject
-```
+`lib/export/pdf.ts:114` reads `node_modules/katex/dist/katex.min.css` from the function's filesystem. Vercel's outputFileTracingIncludes for this route was simplified in the previous PR (puppeteer-core removed, entry deleted entirely), so the katex CSS file isn't being shipped into `/var/task/`. fs.readFileSync throws ENOENT.
 
 ### Fix
 
-Replace the renderer with a MathJax LaTeX→SVG converter. MathJax outputs **standalone SVG** (real `<path>` glyphs, no foreign markup), which sharp/libvips handles cleanly.
+Don't read the file at all. Use Browserless's `addStyleTag` URL form to load KaTeX CSS directly from a CDN. Browserless's headless browser fetches it during rendering — no filesystem dependency, no bundling concern, also enables CSS caching at the CDN edge.
 
-**Add dependency:** `mathjax-full@^3.2.2` (the canonical SVG-output flavor).
+**`lib/export/pdf.ts`** — replace the file-read block:
 
-**Replace `renderLatexToPng` in `lib/export/docx.ts`:**
-
-```ts
-// Module-scope MathJax SVG converter, initialized once and reused across
-// requests. Cold-start cost is ~200ms; warm requests pay nothing.
-let cachedMathJax: { convert: (tex: string, display: boolean) => string } | null = null
-async function getMathJax() {
-  if (cachedMathJax) return cachedMathJax
-  const { mathjax } = await import('mathjax-full/js/mathjax.js')
-  const { TeX } = await import('mathjax-full/js/input/tex.js')
-  const { SVG } = await import('mathjax-full/js/output/svg.js')
-  const { liteAdaptor } = await import('mathjax-full/js/adaptors/liteAdaptor.js')
-  const { RegisterHTMLHandler } = await import('mathjax-full/js/handlers/html.js')
-  const { AllPackages } = await import('mathjax-full/js/input/tex/AllPackages.js')
-
-  const adaptor = liteAdaptor()
-  RegisterHTMLHandler(adaptor)
-  const tex = new TeX({ packages: AllPackages })
-  const svg = new SVG({ fontCache: 'none' })
-  const doc = mathjax.document('', { InputJax: tex, OutputJax: svg })
-
-  cachedMathJax = {
-    convert: (latex: string, display: boolean) => {
-      const node = doc.convert(latex, { display })
-      return adaptor.outerHTML(node)
-    },
-  }
-  return cachedMathJax
-}
-
-export async function renderLatexToPng(latex: string, display = false): Promise<Buffer> {
-  const mj = await getMathJax()
-  const svg = mj.convert(latex, display)
-  // MathJax emits <mjx-container><svg ...>...</svg></mjx-container>.
-  // Extract the inner <svg> so sharp gets a clean root.
-  const inner = svg.match(/<svg[\s\S]*<\/svg>/)?.[0] ?? svg
-  return sharp(Buffer.from(inner))
-    .resize({ width: PNG_PIXEL_WIDTH, withoutEnlargement: true })
-    .png()
-    .toBuffer()
-}
+```diff
+-  // KaTeX stylesheet injected into the page so math renders with the right
+-  // fonts/spacing (the HTML references katex markup but ships no <style>).
+-  const katexCss = fs.readFileSync(path.join(process.cwd(), KATEX_CSS_PATH), 'utf-8')
+-
+   const browserlessUrl = process.env.BROWSERLESS_URL ?? 'https://chrome.browserless.io'
 ```
 
-Also update `mathImageRun` to pass `seg.kind === 'display-math'` as the `display` arg (currently it always renders inline). That just means changing `mathImageRun(tex)` callers to `mathImageRun(tex, isDisplay)`.
+```diff
+       addStyleTag: [{ content: katexCss }],
++      addStyleTag: [{ url: KATEX_CDN_URL }],
+```
 
-**Keep the fallback intact** — `mathImageRun` still returns `null` on any thrown error, `inlineRuns` still inserts the raw `\(...\)` text as fallback. Belt + suspenders.
+Add at module scope (replacing the now-unused `KATEX_CSS_PATH`):
+```ts
+// Load KaTeX CSS from jsDelivr at render time inside Browserless's browser
+// instead of reading from /var/task — Vercel's function tracer was dropping
+// the local file. Version pin must match the katex npm dep major+minor.
+const KATEX_CDN_URL = 'https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css'
+```
+
+Verify the version against `package.json` katex dep (currently `^0.16.45`). Use the **same major.minor** to ensure CSS matches the JS-rendered markup. The 0.16.x line is API-stable; any 0.16.* CDN URL works.
+
+Drop the unused `fs` + `path` imports if they're now unused.
 
 ### Track A validation
 
-- [ ] `npm install mathjax-full@^3.2.2` clean.
 - [ ] `npx tsc --noEmit` exits 0.
-- [ ] Unit smoke (run from repo root in a quick `node -e` or write a 10-line script in `/tmp`): import `renderLatexToPng`, call with `'\\frac{1}{2}'` and `'\\vec{a} \\cdot \\vec{b}'`, write the PNG to `/tmp/test-math-{i}.png`, confirm files are > 1KB (not empty).
-- [ ] Generate a real test DOCX by hitting `/api/tests/<id>/export/docx` locally with a JWT-signed admin cookie (against a test that has math content — Q2/Q3/Q5 from the prod sample is fine).
-- [ ] Open the produced DOCX in any viewer (WSL `code --reuse-window` on the file is fine since Word desktop is on Windows side), inspect: math should render as small embedded images instead of vanishing.
+- [ ] `grep KATEX_CDN_URL lib/export/pdf.ts` → 2 hits (definition + usage).
+- [ ] `grep katex.min.css lib/export/pdf.ts` → 0 hits (or only inside KATEX_CDN_URL).
+- [ ] `grep "fs.readFileSync.*katex" lib/export/pdf.ts` → 0 hits.
 
 ---
 
-## Track B — PDF: rip out @sparticuz/chromium-min, switch to Browserless.io
+## Track B — DOCX: switch math from PNG images to native OOXML OMath
 
-### Diagnosis recap
+### Diagnosis
 
-`@sparticuz/chromium` and `@sparticuz/chromium-min` both fail with `libnss3.so: cannot open shared object file` on every Vercel deploy regardless of version or Node pin. Vercel's Lambda image doesn't ship libnss3 and the Sparticuz tarball doesn't bundle it (the AL2-specific tarball path that was meant to is unreliable on Vercel's runtime). Five iterations, zero progress. Cutting losses.
+Inspected the user's `test-jee-test (1).docx` via python zipfile:
+- 32 `<w:drawing>` references
+- 33 PNG files in `word/media/`
+- First few image sizes (EMU): cx=428625 cy=571500 → **1.2 × 1.6 cm**. That's ~3× normal inline math height; way too tall for line flow.
+
+The user explicitly wants math rendered as native Word equations, not images. This is the right call regardless — OMath is the canonical format, infinitely scalable, editable, file-size minimal.
 
 ### Fix
 
-**Remove** `@sparticuz/chromium-min` and `puppeteer-core` from `package.json` — both are unused after this change.
+Pipeline becomes: **LaTeX → MathML (katex) → OMath XML (mathml2omml) → embed as raw XML in docx via `ImportedXmlComponent`**.
 
-**Rewrite `lib/export/pdf.ts`** to POST the rendered HTML to Browserless's `/pdf` REST endpoint instead of launching chromium locally.
+**Add dep:** `mathml2omml@^0.6.0` (verify exact latest version with `npm view mathml2omml version`).
+
+If `mathml2omml` doesn't exist / install fails / API doesn't match expectations: **stop and write a status entry**. Don't pivot to a different library mid-flight — orchestrator will pick the alternative (likely `temml` or manual MathML-walk).
+
+**Replace the math rendering helpers** in `lib/export/docx.ts`:
 
 ```ts
-// At top of generateTestPDF, after the renderToStaticMarkup line, keep
-// the existing `html` string assembly intact. Then replace the
-// puppeteer.launch + page.setContent + page.pdf + browser.close block
-// with this:
+// Drop these — no more image rendering:
+//   getMathJax / renderLatexToPng / mathImageRun
+// Drop these imports:
+//   import { ImageRun } from 'docx'  (if only used for math)
+//   import katex from 'katex'  (we'll re-add below for MathML output)
 
-const browserlessToken = process.env.BROWSERLESS_TOKEN
-if (!browserlessToken) {
-  throw new Error(
-    'BROWSERLESS_TOKEN is not set. Sign up at browserless.io, copy your API token, ' +
-      'and add it to Vercel env vars (Production scope).',
-  )
+import katex from 'katex'
+import mathml2omml from 'mathml2omml'
+import { ImportedXmlComponent } from 'docx'
+
+function latexToOmathXml(tex: string, display: boolean): string | null {
+  try {
+    const mathml = katex.renderToString(tex, {
+      output: 'mathml',
+      throwOnError: true,
+      displayMode: display,
+      strict: 'ignore',
+    })
+    // katex wraps output in <span class="katex"><math>...</math></span>.
+    // Extract the inner <math> element — mathml2omml expects a pure MathML root.
+    const inner = mathml.match(/<math[\s\S]*?<\/math>/)?.[0]
+    if (!inner) return null
+    return mathml2omml(inner)
+  } catch {
+    return null
+  }
 }
 
-const katexCss = fs.readFileSync(path.join(process.cwd(), KATEX_CSS_PATH), 'utf-8')
-
-const browserlessUrl =
-  process.env.BROWSERLESS_URL ?? 'https://chrome.browserless.io'
-
-const res = await fetch(`${browserlessUrl}/pdf?token=${browserlessToken}`, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    html,
-    options: {
-      format: 'letter',
-      printBackground: true,
-      margin: { top: '14mm', bottom: '18mm', left: '25mm', right: '6mm' },
-      displayHeaderFooter: true,
-      headerTemplate: buildHeaderTemplate(),
-      footerTemplate: buildFooterTemplate(brandingWithLogo),
-    },
-    addStyleTag: [{ content: katexCss }],
-    gotoOptions: { waitUntil: 'domcontentloaded' },
-  }),
-})
-
-if (!res.ok) {
-  const detail = await res.text().catch(() => '')
-  throw new Error(`Browserless returned ${res.status}: ${detail.slice(0, 500)}`)
+async function mathRunFromLatex(
+  tex: string,
+  display: boolean,
+): Promise<ImportedXmlComponent | null> {
+  const omath = latexToOmathXml(tex, display)
+  if (!omath) return null
+  // Word expects OMath wrapped in either <m:oMath> (inline) or
+  // <m:oMathPara> (display). mathml2omml output starts with one of these
+  // by default; if it doesn't, wrap it ourselves.
+  const wrapped = /^<m:oMath/.test(omath)
+    ? omath
+    : `<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">${omath}</m:oMath>`
+  return ImportedXmlComponent.fromXmlString(wrapped)
 }
-
-return Buffer.from(await res.arrayBuffer())
 ```
 
-Delete the entire `if (isServerless) ... else ...` puppeteer launch block. Delete the `puppeteer-core` and `@sparticuz/chromium-min` dynamic imports. Remove the `CHROMIUM_PACK_URL` constant. The function reduces from ~150 lines to ~50.
+**Update `inlineRuns`:**
 
-### Update `.env.example`
-
-Add:
+```ts
+async function inlineRuns(source: string | null | undefined): Promise<ParagraphChild[]> {
+  if (!source) return []
+  const segments = splitBody(source)
+  if (segments.every((s) => s.kind === 'prose')) {
+    return [new TextRun(source)]
+  }
+  const runs: ParagraphChild[] = []
+  for (const seg of segments) {
+    if (seg.kind === 'prose') {
+      if (seg.text.length > 0) runs.push(new TextRun(seg.text))
+    } else if (seg.kind === 'inline-math' || seg.kind === 'display-math') {
+      const run = await mathRunFromLatex(seg.tex, seg.kind === 'display-math')
+      if (run) {
+        runs.push(run)
+      } else {
+        // Fallback: raw LaTeX in delimiters so the math is at least readable
+        const fallback =
+          seg.kind === 'inline-math' ? `\\(${seg.tex}\\)` : `\\[${seg.tex}\\]`
+        runs.push(new TextRun(fallback))
+      }
+    }
+  }
+  return runs
+}
 ```
-# Browserless.io API token for PDF generation
-# Sign up at https://browserless.io — free tier: ~1000 PDFs/month
-BROWSERLESS_TOKEN=
 
-# Optional: override Browserless endpoint (defaults to chrome.browserless.io)
-# Useful if you provision a dedicated instance later
-BROWSERLESS_URL=
-```
+**Remove `mathjax-full` from `package.json`** — no longer needed. Lockfile regen via `npm install`.
 
-### Update `next.config.mjs`
-
-Drop the now-unneeded externalization + tracing. `puppeteer-core` line was already removed in a prior PR — confirm and don't reintroduce. In `serverComponentsExternalPackages`, remove `'puppeteer-core'` if it's still there. In `outputFileTracingIncludes`, drop the entire `/api/tests/[id]/export/pdf` entry — no native binaries to ship.
+**Sharp** stays in the file (still used by `imageParagraph` for question-body diagram images).
 
 ### Track B validation
 
-- [ ] `npm install` (after package.json edits) clean. `ls node_modules/@sparticuz/` empty or directory gone; `ls node_modules/puppeteer-core` directory gone.
+- [ ] `npm install mathml2omml@^X` clean (use actual latest version BE confirms via `npm view`).
+- [ ] `npm uninstall mathjax-full` clean. `ls node_modules/mathjax-full` → not present.
 - [ ] `npx tsc --noEmit` exits 0.
-- [ ] Local smoke: with `BROWSERLESS_TOKEN` set in `.env.local` (use a free trial token from browserless.io), hit `/api/tests/<id>/export/pdf` and confirm a real PDF downloads.
-- [ ] `next.config.mjs` no longer references `@sparticuz/chromium*` or `puppeteer-core` anywhere.
+- [ ] Unit smoke (similar to last sprint): generate a small DOCX with 3 math expressions (`\frac{1}{2}` inline, `\vec a \cdot \vec b` inline, the quadratic formula in display mode). Use python zipfile to verify:
+  - `word/document.xml` contains `<m:oMath>` elements (NOT `<w:drawing>`).
+  - `word/media/` is **empty** (or only contains diagram images, not math).
+  - `[Content_Types].xml` declares the math namespace.
+- [ ] Open the produced DOCX in any viewer that supports OMath (Word, LibreOffice). Math should render as actual scalable equations matching line height.
+
+If the `ImportedXmlComponent.fromXmlString` approach doesn't produce a valid DOCX (Word complains on open), there's a fallback: pass the raw XML via `Document`'s `customXmlString` or wrap as a different docx-lib primitive. **Do not improvise — write a status entry detailing what failed and stop.**
 
 ---
 
-## Workflow (both tracks on one branch)
+## Workflow (both tracks, one branch)
 
 1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, this brief.
-2. `git fetch origin && git checkout main && git pull && git checkout -b backend/docx-mathjax-and-pdf-browserless`
-3. **Commit 1 (Track A):** `[BE] DOCX export: swap math renderer from katex+foreignObject to MathJax SVG (libvips can't rasterize foreignObject; math was vanishing)`. **Backdate:** `GIT_AUTHOR_DATE='2026-05-29T23:50:00+05:30'` and `GIT_COMMITTER_DATE='2026-05-29T23:50:00+05:30'`.
-4. **Commit 2 (Track B):** `[BE] PDF export: replace @sparticuz/chromium-min with Browserless.io REST API (5 chromium hotfixes failed; libnss3.so persistently missing on Vercel Lambda image)`. **Backdate:** `GIT_AUTHOR_DATE='2026-05-29T23:55:00+05:30'` and `GIT_COMMITTER_DATE='2026-05-29T23:55:00+05:30'`.
-5. Push: `git push -u origin backend/docx-mathjax-and-pdf-browserless`.
-6. Append a status entry to `.agents/status-backend.md` covering both tracks. Run `~/report.sh backend "DOCX mathjax + PDF browserless PR ready"`.
+2. `git fetch origin && git checkout main && git pull && git checkout -b backend/native-math-pdf-css-and-docx-omath`
+3. **Commit 1 (Track A):** `[BE] PDF export: load KaTeX CSS from jsDelivr CDN (fixes ENOENT on Vercel where the tracer dropped node_modules/katex/dist/katex.min.css)`. **Backdate:** `GIT_AUTHOR_DATE='2026-05-30T00:30:00+05:30'` and `GIT_COMMITTER_DATE='2026-05-30T00:30:00+05:30'`.
+4. **Commit 2 (Track B):** `[BE] DOCX export: render math as native OOXML OMath instead of PNG images (drop mathjax-full, add mathml2omml; user explicitly wants editable equations not raster blocks)`. **Backdate:** `GIT_AUTHOR_DATE='2026-05-30T00:35:00+05:30'` and `GIT_COMMITTER_DATE='2026-05-30T00:35:00+05:30'`.
+5. Push: `git push -u origin backend/native-math-pdf-css-and-docx-omath`.
+6. Status entry covering both tracks. Run `~/report.sh backend "DOCX OMath + PDF KaTeX CDN PR ready"`.
 7. **Stop.**
 
 ## Hard rules
 
 - One branch, two commits, one PR.
-- Track A: only `package.json`, `package-lock.json`, `lib/export/docx.ts`. Do NOT touch `lib/ui/render-body-html.ts` (the splitter is correct).
-- Track B: only `package.json`, `package-lock.json`, `lib/export/pdf.ts`, `next.config.mjs`, `.env.example`. Do NOT touch the route file (`app/api/tests/[id]/export/pdf/route.ts`) — its `maxDuration = 60` + `runtime = 'nodejs'` stay correct.
-- Don't write any tests beyond the unit smoke described in Track A validation. We're shipping a fix, not adding test infrastructure.
+- Track A: only `lib/export/pdf.ts` (and possibly `next.config.mjs` if you want to remove the now-irrelevant tracing entry — optional).
+- Track B: `package.json`, `package-lock.json`, `lib/export/docx.ts` only.
+- Don't touch `lib/ui/render-body-html.ts` or the splitter — that's correct.
+- Don't touch the route files.
+- **If `mathml2omml` package doesn't exist or API differs from above, STOP** — write status entry, don't pivot to a different library on your own. Orchestrator owns the library choice.
+- **If the OMath embedding produces a broken DOCX (Word can't open it), STOP** — write status entry with the exact Word error. Don't try alternative embedding methods on your own.
 - No Claude attribution.
-- If `mathjax-full` install fails (transitive native bindings, peer deps), stop and write a status entry — orchestrator will rescope.
-- If you can't run the local PDF smoke (no BROWSERLESS_TOKEN handy), skip it and write so in status. User will smoke on production.
-- This is the recovery from a long chain of failed hotfixes. Apply precisely; do NOT improvise.
+- The user has been burned multiple times by export bugs. Apply precisely; if anything in the brief doesn't match reality, stop and ask. Don't ship a half-fix.
