@@ -13,57 +13,106 @@ If either is wrong, fix before committing.
 
 ---
 
-## Current Task — Allow Next.js App Router icon routes through middleware
+## Current Task — Schema migration for solution + explanation image uploads
 
-FE just shipped `app/icon.png` and `app/apple-icon.png` (Varenyam favicon, PR `frontend/varenyam-favicon-palette`). Next.js auto-routes those at `/icon.png` and `/apple-icon.png`, but our auth middleware matcher only excludes `favicon.ico` — so unauthenticated requests for the new icons get a 307 redirect to `/login`, which means the favicon doesn't render on the login tab itself (the most visible place a brand mark should appear).
+We're starting a 3-PR sprint that adds per-question image upload for **solution** and **explanation** fields (the current question-body uploader pattern, but extended to those fields, with an additional "Extract LaTeX from image" action). You own the schema + validation foundation that BE + FE will build on.
 
-### What to change — exactly
+This brief is INT-only — BE and FE briefs will follow after you push.
 
-**File:** `middleware.ts` (line 32)
+### What to change
 
-**Current matcher:**
-```ts
-matcher: ['/((?!_next/static|_next/image|favicon.ico|api/health).*)']
+**1. Prisma migration** — add two new array columns to the `Question` model.
+
+Edit `prisma/schema.prisma`. The `Question` model has these existing image-adjacent fields:
+- `image_urls    String[]`   (question-body images — already wired throughout)
+- `solution      String?`    (text-only solution)
+- `explanation   String?`    (text-only explanation)
+
+Add two new fields **immediately after `image_urls`** to keep the file diff clean:
+
+```prisma
+solution_image_urls     String[]
+explanation_image_urls  String[]
 ```
 
-**New matcher:**
-```ts
-matcher: ['/((?!_next/static|_next/image|favicon.ico|icon.png|apple-icon.png|api/health).*)']
+Don't add defaults — Postgres arrays default to `{}` (empty array) which is what we want, and Prisma maps `String[]` to `text[] NOT NULL DEFAULT '{}'`. Existing rows get empty arrays automatically.
+
+**2. Generate the migration SQL.**
+
+```
+npx prisma migrate dev --name add_solution_and_explanation_image_urls --create-only
 ```
 
-Just adds `icon.png|apple-icon.png` to the existing negative lookahead so requests for those two paths skip the middleware entirely. No JWT check, no redirect, served by Next as static assets.
+The `--create-only` flag writes the migration file without applying it (so it goes through the standard `migrate deploy` path on Vercel — same pattern as the rest of the repo). Review the generated SQL — it should be roughly:
 
-That is the only change in this PR. Do NOT touch `PUBLIC_ROUTES`, the JWT logic, or any other file.
+```sql
+ALTER TABLE "questions"
+  ADD COLUMN "solution_image_urls" TEXT[] NOT NULL DEFAULT '{}',
+  ADD COLUMN "explanation_image_urls" TEXT[] NOT NULL DEFAULT '{}';
+```
 
-### Why this is INT, not FE
+If Prisma generates anything beyond that (`DROP DEFAULT`, additional ALTERs, schema-drift cleanup), **stop and write a status entry** — orchestrator needs to see it before it lands.
 
-`middleware.ts` is INT-owned per `PROTOCOL.md` (Roles table). FE flagged it in their status entry and deliberately did not edit it.
+**3. Update Zod schemas** in `lib/validation/question.ts`.
+
+Find the schemas that already validate `image_urls` (search for `image_urls:`). Add matching definitions for both new fields wherever `image_urls` is defined:
+
+```ts
+image_urls: z.array(z.string()).optional(),
+solution_image_urls: z.array(z.string()).optional(),
+explanation_image_urls: z.array(z.string()).optional(),
+```
+
+This applies to:
+- The **form-level** schema (what the FE submits)
+- The **server-create** schema (what the BE API validates on POST)
+- The **server-update** schema (what the BE API validates on PATCH)
+- The **defaults** object if there's one (set both new fields to `[]`)
+
+Match the existing optional/required pattern for `image_urls` exactly. If `image_urls` is `.default([])` somewhere, the new fields should be too. If it's `.optional()`, match that.
+
+**4. Update wire types** — if `types/domain.ts` or `lib/ui/api.ts` re-export a `Question` type that lists fields, add both new arrays there too. Search:
+
+```bash
+grep -rn "image_urls" types/ lib/ui/api.ts lib/api/ 2>/dev/null
+```
+
+Add the new field declarations beside each `image_urls` occurrence so BE + FE both see them through the shared types.
+
+### Out of scope (don't touch — that's BE's lane next)
+
+- `app/api/questions/route.ts` POST handler
+- `app/api/questions/[id]/route.ts` PATCH handler
+- Any new `POST /api/questions/upload-image` or `extract-latex-from-image` endpoints
+- The image-upload component / question form / dashboard rendering
+
+If something feels like it belongs in this PR but is in BE's lane, **don't do it** — write a status note flagging it for the next brief.
 
 ### Validation
 
-- [ ] `npx tsc --noEmit` exits 0.
-- [ ] `npm run dev` (port 4000) boots clean.
-- [ ] `curl -sI http://localhost:4000/icon.png` returns **200**, NOT 307. (Run before and after the change to confirm the fix actually flips it.)
-- [ ] `curl -sI http://localhost:4000/apple-icon.png` returns 200.
-- [ ] `curl -sI http://localhost:4000/` (no cookie) still returns 307 to `/login` — sanity check that auth gating still works for non-icon paths.
-- [ ] `curl -sI http://localhost:4000/api/health` still returns 200 — confirming the existing exclusion still works (regression-check on the matcher).
+- [ ] `npx prisma generate` clean.
+- [ ] `npx prisma migrate dev --name ... --create-only` produces ONLY the two `ADD COLUMN` statements. No drift, no unexpected ALTERs.
+- [ ] `npx tsc --noEmit` exits 0 (Prisma client regen should make the new fields type-available).
+- [ ] Migration file committed to `prisma/migrations/`.
+- [ ] Grep verify the new field names appear in: `prisma/schema.prisma`, the new migration SQL, `lib/validation/question.ts` (multiple places), and wherever `image_urls` appears in `types/` or `lib/ui/api.ts`.
 
 ### Workflow
 
 1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, this brief.
-2. `git fetch origin && git checkout main && git pull && git checkout -b integration/middleware-allow-app-icons`
-3. Edit `middleware.ts` line 32 — add `icon.png|apple-icon.png` to the matcher's negative lookahead.
-4. Verify with the four curl checks above.
-5. **Single commit.** Message: `[INT] middleware: exclude /icon.png + /apple-icon.png from auth matcher`. **Backdate:** `GIT_AUTHOR_DATE='2026-05-29T00:30:00+05:30'` and `GIT_COMMITTER_DATE='2026-05-29T00:30:00+05:30'`.
-6. Push: `git push -u origin integration/middleware-allow-app-icons`. If credentials block, write `BLOCKED ON: push needs orchestrator` and stop.
-7. If `gh` is available, `gh pr create` against `main`. Title: `[INT] middleware: exclude /icon.png + /apple-icon.png from auth matcher`. Body: short — paste the matcher diff + the curl-200 evidence. If `gh` is not available, leave PR creation to orchestrator (write `BLOCKED ON: gh not installed, orchestrator to open PR` and continue with status entry).
-8. Append a short entry to `.agents/status-integration.md`. Run `~/report.sh integration "middleware icon matcher PR ready"`.
+2. `git fetch origin && git checkout main && git pull && git checkout -b integration/solution-and-explanation-image-urls`
+3. Edit `prisma/schema.prisma` → add 2 fields. Run `npx prisma migrate dev --name add_solution_and_explanation_image_urls --create-only`. Inspect the generated SQL.
+4. Edit `lib/validation/question.ts` → add both fields beside every `image_urls:` definition.
+5. Edit any `types/`/`lib/ui/api.ts` shared types that list `image_urls`.
+6. **Single commit.** Message: `[INT] Schema: add solution_image_urls + explanation_image_urls to Question (migration + zod + shared types)`. **Backdate:** `GIT_AUTHOR_DATE='2026-05-30T03:00:00+05:30'` and `GIT_COMMITTER_DATE='2026-05-30T03:00:00+05:30'`.
+7. Push: `git push -u origin integration/solution-and-explanation-image-urls`. If credentials block, write `BLOCKED ON: push needs orchestrator` and stop.
+8. Append a short entry to `.agents/status-integration.md`. Run `~/report.sh integration "solution+explanation image_urls schema PR ready"`.
 9. **Stop.**
 
 ### Hard rules
 
-- One commit, one PR. One file changed.
-- Do not change `PUBLIC_ROUTES`, the JWT verification, header injection, or anything else in `middleware.ts`.
-- Do not touch `.tsx`, components, or styles. This is purely the middleware matcher regex.
+- One commit, one PR.
+- `npx prisma migrate dev --create-only` — do NOT apply locally without `--create-only` (we don't want migrations applied to dev DB without orchestrator review).
+- If the generated migration SQL contains anything beyond the two `ADD COLUMN`s, STOP and write a status entry showing the SQL. Don't ship surprise schema drift.
+- Don't touch any route, component, page, or `lib/export/**`.
 - No Claude attribution.
-- If the curl-200 check fails after your change, do NOT push. Investigate (cache? wrong syntax in the lookahead? matcher needs the path to start with `/`?). Write a status entry and stop.
+- Keep both new fields' nullability + defaults identical to the existing `image_urls` pattern — consistency matters for the BE/FE work that follows.
