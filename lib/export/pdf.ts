@@ -1,8 +1,10 @@
-// Note: react-dom/server and puppeteer are dynamically imported inside
-// generateTestPDF below — Next.js App Router rejects top-level imports of
-// react-dom/server in server modules ("You're importing a component that
-// imports react-dom/server"). Dynamic import sidesteps the build-time check
-// without changing runtime behaviour.
+// Note: react-dom/server, puppeteer-core, and @sparticuz/chromium are
+// dynamically imported inside generateTestPDF below — Next.js App Router
+// rejects top-level imports of react-dom/server in server modules
+// ("You're importing a component that imports react-dom/server"). Dynamic
+// import sidesteps the build-time check without changing runtime
+// behaviour, and keeps the chromium binary out of every build that
+// doesn't touch this route.
 import * as React from 'react'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -81,7 +83,7 @@ export async function generateTestPDF(testId: string): Promise<Buffer> {
   const defaultLogoDataUrl = readBrandLogoDataUrl() ?? undefined
 
   const { renderToStaticMarkup } = await import('react-dom/server')
-  const puppeteer = (await import('puppeteer')).default
+  const puppeteer = (await import('puppeteer-core')).default
 
   const html =
     '<!doctype html>' +
@@ -93,13 +95,36 @@ export async function generateTestPDF(testId: string): Promise<Buffer> {
       }),
     )
 
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    ...(process.env.PUPPETEER_EXECUTABLE_PATH
-      ? { executablePath: process.env.PUPPETEER_EXECUTABLE_PATH }
-      : {}),
-  })
+  // Pick a chromium binary. On Vercel (and any other Linux serverless
+  // host), @sparticuz/chromium ships a stripped-down Chromium tuned for
+  // function-sized bundles. Locally we expect PUPPETEER_EXECUTABLE_PATH
+  // in .env.local pointing at the system Chrome/Edge install (puppeteer-
+  // core does not download a browser of its own).
+  const isServerless = Boolean(process.env.VERCEL) || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME)
+  let launchOptions: Parameters<typeof puppeteer.launch>[0]
+  if (isServerless) {
+    const chromium = (await import('@sparticuz/chromium')).default
+    launchOptions = {
+      args: chromium.args,
+      defaultViewport: chromium.defaultViewport,
+      executablePath: await chromium.executablePath(),
+      headless: true,
+    }
+  } else {
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH
+    if (!executablePath) {
+      throw new Error(
+        'PUPPETEER_EXECUTABLE_PATH is not set. Point it at a local Chrome/Edge binary in .env.local (puppeteer-core does not download a browser), or run on Vercel where @sparticuz/chromium is used automatically.',
+      )
+    }
+    launchOptions = {
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      executablePath,
+    }
+  }
+
+  const browser = await puppeteer.launch(launchOptions)
   try {
     const page = await browser.newPage()
     await page.setContent(html, { waitUntil: 'networkidle0' })
