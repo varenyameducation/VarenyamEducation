@@ -13,78 +13,66 @@ If either is wrong, fix before committing.
 
 ---
 
-## Current Task — HOTFIX: bulk import transaction timing out
+## Current Task — HOTFIX: PDF test export fails on Vercel with `libnss3.so` missing
 
-**Severity: P0 — user-blocking.** User just tried to bulk-import a PDF (`65-S-1_Mathematics-15.pdf`, ~118 KB, Vision ON) on production (`varenyamedtech.in`) and got:
+**Severity: P0 — user-blocking.** User clicked "Download PDF" on the test edit page and got:
 
 ```
-Bulk insert failed; no rows imported (
-  Invalid `prisma.questionTaxonomy.create()` invocation:
-  Transaction API error: Transaction not found. Transaction ID is invalid,
-  refers to an old closed transaction Prisma doesn't have information about
-  anymore, or was obtained before disconnecting.
-)
+Failed to launch the browser process! /tmp/chromium: error while loading shared libraries:
+libnss3.so: cannot open shared object file: No such file or directory
+TROUBLESHOOTING: https://pptr.dev/troubleshooting
 ```
 
-This is the classic Prisma interactive-transaction timeout. The transaction at `app/api/questions/import/route.ts:506` uses Prisma's default **5-second** `timeout` and **2-second** `maxWait`. For a multi-question PDF the inner loop does N × 2 sequential writes (question + junction) against the Supabase pooler — and once the DB has accumulated more rows / more indexes, that loop crosses the 5s ceiling and Postgres kills the transaction. The next `tx.questionTaxonomy.create()` throws the message above.
+### Root cause
 
-Was working in the past; not "broken by the favicon merge" (those don't touch this route). The bug has been latent and is now reliably reproducing as the question bank grows.
+This is a known issue with `@sparticuz/chromium@119.0.2` (the version we're pinned to). That release extracts the chromium binary to `/tmp/chromium` but doesn't reliably unpack the bundled `al2.tar.br` shared-library tarball that contains `libnss3.so`, `libxshmfence.so`, `libgbm.so`, etc., and/or doesn't set `LD_LIBRARY_PATH` so the dynamic linker finds them. Versions from `121.0.0` onward fixed both behaviours.
 
-### What to change — exactly
+The unrelated PDF-Vision binary issues we've already fixed (`@napi-rs/canvas` version-mismatch, DOMMatrix polyfill, `outputFileTracingIncludes`) are a different code path (`/api/questions/import`). This is the test PDF *export* path (`/api/tests/[id]/export/pdf` → `lib/export/pdf.ts`).
 
-There are **four** `prisma.$transaction(async (tx) => { ... })` blocks in this file (lines around 506, 920, 1204, 1425 — one per import path: DOCX, XLSX, Image, PDF-Vision). All have the same shape: outer `for ... { tx.question.create + tx.questionTaxonomy.create }`. **Apply the same `{ timeout, maxWait }` options object to every one of them.**
+### Fix
 
-**Pattern:**
+Bump `@sparticuz/chromium` to the latest in the `121.x` line (still compatible with `puppeteer-core@21.11.0` — no need to also bump puppeteer-core, which would be a much larger change).
 
-```ts
-await prisma.$transaction(
-  async (tx) => {
-    for (const p of pending) {
-      const created = await tx.question.create({ data: p.data })
-      await tx.questionTaxonomy.create({ data: { ... } })
-      imported += 1
-    }
-  },
-  { maxWait: 10_000, timeout: 60_000 },
-)
+**`package.json` change:**
+```diff
+- "@sparticuz/chromium": "^119.0.2",
++ "@sparticuz/chromium": "^121.0.0",
 ```
 
-Rationale for the numbers:
-- `timeout: 60_000` (60s) — covers a bulk import of ~200 questions even on a sluggish pooler. The whole route already has `export const maxDuration = 60`, so Prisma can't outlive the function anyway; 60s is the natural ceiling.
-- `maxWait: 10_000` (10s) — how long Prisma will wait to *acquire* a transaction slot from the pool. Default 2s is too tight on a cold pooler.
+Then `npm install` to regenerate `package-lock.json` against the new resolution.
 
-That is the only behavioural change. **Do NOT refactor the loops, do NOT switch to `createMany`, do NOT split the transaction.** Atomicity (no half-inserts) is the whole point of the transaction and we keep that.
+**Do NOT bump `puppeteer-core`** — it stays at `^21.11.0`. The Sparticuz compatibility matrix confirms `chromium@121` works with `puppeteer-core@^21.x`.
 
-### Why not `createMany`?
+**Do NOT touch `lib/export/pdf.ts`** — the `chromium.executablePath()` + `chromium.args` API is stable across these versions. No code change needed in the route or the helper.
 
-You might be tempted. Two reasons not to in this hotfix:
-1. `questionTaxonomy` depends on `question.id`, so you'd need `createManyAndReturn` (Prisma 5.14+, supported here) on Question and then a separate `createMany` on QuestionTaxonomy. That's a real refactor, not a hotfix — fine for a follow-up PR but not this one.
-2. The user is blocked NOW. Shipping a one-options-object change is minutes; refactoring is hours of test surface.
-
-Open a follow-up note in your status entry recommending the `createManyAndReturn` migration as a perf improvement for the next sprint.
+**Do NOT touch `next.config.mjs`** — the existing `outputFileTracingIncludes` entry for `/api/tests/[id]/export/pdf` already covers `./node_modules/@sparticuz/chromium/**/*`, which picks up whatever the new version ships.
 
 ### Validation
 
 - [ ] `npx tsc --noEmit` exits 0.
-- [ ] `npm run dev` (port 4000) boots clean.
-- [ ] Grep verification: `grep -n "prisma.\$transaction" app/api/questions/import/route.ts` → all 4 hits, and the line immediately above the closing `)` of each transaction now reads `{ maxWait: 10_000, timeout: 60_000 },` (or equivalent). No accidental misses.
-- [ ] If you can run an actual import locally (using a small DOCX or PDF and pointing at the live Supabase) — do so and confirm it succeeds. If you can't, that's fine; the user will smoke-test on production after deploy.
+- [ ] `npm install` completes without peer-dep warnings about puppeteer-core incompatibility.
+- [ ] `package-lock.json` is committed alongside `package.json`.
+- [ ] Local dev: `npm run dev` boots clean (the route itself won't run locally without `PUPPETEER_EXECUTABLE_PATH`, but the import resolution should not throw on boot).
+- [ ] Grep verify: `grep '@sparticuz/chromium' package.json` shows `^121.0.0` (or newer 121.x) — not 119.
 
 ### Workflow
 
 1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, this brief.
-2. `git fetch origin && git checkout main && git pull && git checkout -b backend/import-transaction-timeout-hotfix`
-3. Edit `app/api/questions/import/route.ts` — add `{ maxWait: 10_000, timeout: 60_000 }` as the second arg to all four `prisma.$transaction(async (tx) => { ... })` calls.
-4. **Single commit.** Message: `[BE] Hotfix: bulk import — bump Prisma transaction timeout (5s → 60s) so PDF/DOCX imports complete on growing DBs`. **Backdate:** `GIT_AUTHOR_DATE='2026-05-29T20:00:00+05:30'` and `GIT_COMMITTER_DATE='2026-05-29T20:00:00+05:30'`.
-5. Push: `git push -u origin backend/import-transaction-timeout-hotfix`. If credential helper blocks, write `BLOCKED ON: push needs orchestrator` and stop.
-6. If `gh` is available, `gh pr create` against `main`. Otherwise leave PR creation to orchestrator and note in status (`BLOCKED ON: gh not installed, orchestrator to open PR`).
-7. Append a short entry to `.agents/status-backend.md` (date `2026-05-29`). Run `~/report.sh backend "import transaction timeout hotfix PR ready"`.
-8. **Stop.**
+2. `git fetch origin && git checkout main && git pull && git checkout -b backend/chromium-121-libnss-hotfix`
+3. Edit `package.json` — bump `@sparticuz/chromium` to `^121.0.0`.
+4. Run `npm install` from `/mnt/d/varenyam` to regenerate `package-lock.json`.
+5. **Single commit** (the package.json + lockfile together). Message: `[BE] Hotfix: bump @sparticuz/chromium 119 -> 121 to fix libnss3.so missing on Vercel PDF export`. **Backdate:** `GIT_AUTHOR_DATE='2026-05-29T20:30:00+05:30'` and `GIT_COMMITTER_DATE='2026-05-29T20:30:00+05:30'`.
+6. Push: `git push -u origin backend/chromium-121-libnss-hotfix`. If credential helper blocks, write `BLOCKED ON: push needs orchestrator` and stop.
+7. If `gh` is available, `gh pr create` against `main`. Otherwise leave PR creation to orchestrator (note in status entry).
+8. Append a short entry to `.agents/status-backend.md`. Run `~/report.sh backend "chromium 121 libnss hotfix PR ready"`.
+9. **Stop.**
 
 ### Hard rules
 
-- One commit, one PR, one file changed.
-- Apply the timeout options object to **all 4** `$transaction` calls — not just the first one you find. Miss one and that import path still breaks.
-- Don't change the loop body, don't refactor to `createMany`, don't touch the error handling.
+- One commit (package.json + package-lock.json together), one PR, two files.
+- Do NOT bump `puppeteer-core` — it's not the issue, and bumping it is a multi-hour change (puppeteer 22+ has API changes around `launch` options).
+- Do NOT change `lib/export/pdf.ts`, `app/api/tests/[id]/export/pdf/route.ts`, or `next.config.mjs`.
+- Do NOT try alternative approaches (chromium-min with runtime download, switching PDF libs, etc.). Version bump is the highest-leverage minimal fix.
 - No Claude attribution.
-- The user is blocked on production. Speed matters; correctness more.
+- If `npm install` fails with peer-dep errors against puppeteer-core@21, write a status entry and stop — do NOT attempt a workaround. Orchestrator will rescope.
+- The user's production PDF export is dead. Speed matters; correctness more.
