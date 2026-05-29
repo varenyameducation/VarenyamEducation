@@ -13,199 +13,160 @@ If either is wrong, fix before committing.
 
 ---
 
-## Current Task — REWORK math rendering: native in both formats
+## Current Task — Two follow-up bugs from the OMath/Browserless PR
 
-User merged the previous rework. Both new issues surfaced:
+User merged. Two distinct issues to fix:
 
-**Issue 1 — PDF**: `ENOENT: no such file or directory, open '/var/task/node_modules/katex/dist/katex.min.css'`. Vercel's function tracer didn't ship the KaTeX CSS file. Browserless never gets the stylesheet → 500.
+1. **DOCX**: Word refuses to open the exported file with "Word experienced an error trying to open the file." Orchestrator inspected the broken DOCX via python zipfile + regex and confirmed: every OMath element is wrapped in an `<undefined>` tag. That's invalid OOXML — Word's validator rejects.
 
-**Issue 2 — DOCX**: the MathJax-SVG-to-PNG approach you just shipped DOES produce visible math now (32 PNGs embedded, ~600-6000 B each), but the user is explicitly rejecting the image approach:
-> "this time the document had really big maths letters are u rendering them as images or as HTML only? i want them as HTML only not in images format, please remove this blunder"
+   ```xml
+   <w:p>
+     <w:r>...<w:t>(A) </w:t></w:r>
+     <undefined>
+       <m:oMath xmlns:m="..." xmlns:w="...">...</m:oMath>
+     </undefined>
+   </w:p>
+   ```
 
-They're right. Native Word math (OOXML OMath) is the correct format — scales with font, editable in Word's equation editor, no pixelation, no oversize images. The image approach was a workaround; OMath is the real fix.
+   `ImportedXmlComponent.fromXmlString(<m:oMath ...>...</m:oMath>)` is producing this `<undefined>` wrapper. Likely cause: docx-lib's xml-js parsing of the namespace-prefixed root tag doesn't populate `element.name` correctly, so the resulting `rootKey` is the string `"undefined"`.
 
-Two tracks, one branch, two commits, one PR. Both ship the actual right answer this time, not another workaround.
+2. **PDF**: Logo renders at **14×16 pixels** in the output PDF (Chrome's broken-image placeholder shape — 1 RGB image + 1 DeviceGray alpha mask, both 14×16). The current pipeline base64-encodes `public/brand/varenyam-logo-mark.png` to a data URL and stuffs it into the HTML sent to Browserless. Most likely: either the file isn't in the function bundle on Vercel (read returns null → falls back to `branding.logo_url` from DB → that signed URL is broken/expired → broken-image placeholder), OR the data URL itself is being corrupted/truncated through the JSON body to Browserless.
 
----
-
-## Track A — PDF: load KaTeX CSS from CDN instead of disk
-
-### Diagnosis
-
-`lib/export/pdf.ts:114` reads `node_modules/katex/dist/katex.min.css` from the function's filesystem. Vercel's outputFileTracingIncludes for this route was simplified in the previous PR (puppeteer-core removed, entry deleted entirely), so the katex CSS file isn't being shipped into `/var/task/`. fs.readFileSync throws ENOENT.
-
-### Fix
-
-Don't read the file at all. Use Browserless's `addStyleTag` URL form to load KaTeX CSS directly from a CDN. Browserless's headless browser fetches it during rendering — no filesystem dependency, no bundling concern, also enables CSS caching at the CDN edge.
-
-**`lib/export/pdf.ts`** — replace the file-read block:
-
-```diff
--  // KaTeX stylesheet injected into the page so math renders with the right
--  // fonts/spacing (the HTML references katex markup but ships no <style>).
--  const katexCss = fs.readFileSync(path.join(process.cwd(), KATEX_CSS_PATH), 'utf-8')
--
-   const browserlessUrl = process.env.BROWSERLESS_URL ?? 'https://chrome.browserless.io'
-```
-
-```diff
-       addStyleTag: [{ content: katexCss }],
-+      addStyleTag: [{ url: KATEX_CDN_URL }],
-```
-
-Add at module scope (replacing the now-unused `KATEX_CSS_PATH`):
-```ts
-// Load KaTeX CSS from jsDelivr at render time inside Browserless's browser
-// instead of reading from /var/task — Vercel's function tracer was dropping
-// the local file. Version pin must match the katex npm dep major+minor.
-const KATEX_CDN_URL = 'https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css'
-```
-
-Verify the version against `package.json` katex dep (currently `^0.16.45`). Use the **same major.minor** to ensure CSS matches the JS-rendered markup. The 0.16.x line is API-stable; any 0.16.* CDN URL works.
-
-Drop the unused `fs` + `path` imports if they're now unused.
-
-### Track A validation
-
-- [ ] `npx tsc --noEmit` exits 0.
-- [ ] `grep KATEX_CDN_URL lib/export/pdf.ts` → 2 hits (definition + usage).
-- [ ] `grep katex.min.css lib/export/pdf.ts` → 0 hits (or only inside KATEX_CDN_URL).
-- [ ] `grep "fs.readFileSync.*katex" lib/export/pdf.ts` → 0 hits.
+Both fixable in one branch.
 
 ---
 
-## Track B — DOCX: switch math from PNG images to native OOXML OMath
+## Track A — DOCX: stop `<undefined>` from wrapping every OMath
 
-### Diagnosis
+### Approach (try in order; ship the first one that works)
 
-Inspected the user's `test-jee-test (1).docx` via python zipfile:
-- 32 `<w:drawing>` references
-- 33 PNG files in `word/media/`
-- First few image sizes (EMU): cx=428625 cy=571500 → **1.2 × 1.6 cm**. That's ~3× normal inline math height; way too tall for line flow.
-
-The user explicitly wants math rendered as native Word equations, not images. This is the right call regardless — OMath is the canonical format, infinitely scalable, editable, file-size minimal.
-
-### Fix
-
-Pipeline becomes: **LaTeX → MathML (katex) → OMath XML (mathml2omml) → embed as raw XML in docx via `ImportedXmlComponent`**.
-
-**Add dep:** `mathml2omml@^0.6.0` (verify exact latest version with `npm view mathml2omml version`).
-
-If `mathml2omml` doesn't exist / install fails / API doesn't match expectations: **stop and write a status entry**. Don't pivot to a different library mid-flight — orchestrator will pick the alternative (likely `temml` or manual MathML-walk).
-
-**Replace the math rendering helpers** in `lib/export/docx.ts`:
+**Attempt 1 — strip xmlns from OMath before importing.** mathml2omml emits `<m:oMath xmlns:m="..." xmlns:w="...">`. The document root already declares both namespaces. The redundant declarations on the root element may be confusing docx-lib's xml-js parser. Strip them and re-test:
 
 ```ts
-// Drop these — no more image rendering:
-//   getMathJax / renderLatexToPng / mathImageRun
-// Drop these imports:
-//   import { ImageRun } from 'docx'  (if only used for math)
-//   import katex from 'katex'  (we'll re-add below for MathML output)
-
-import katex from 'katex'
-import mathml2omml from 'mathml2omml'
-import { ImportedXmlComponent } from 'docx'
-
-function latexToOmathXml(tex: string, display: boolean): string | null {
+function mathRunFromLatex(tex: string, display: boolean): ImportedXmlComponent | null {
+  const omath = latexToOmathXml(tex, display)
+  if (!omath) return null
+  // mathml2omml always emits <m:oMath ...>. Strip ALL xmlns attributes from
+  // the root open-tag — docx-lib's xml-js parser appears to mis-parse the
+  // element name when the root has its own namespace declarations, producing
+  // <undefined>...</undefined> wrapping. The document.xml root declares
+  // xmlns:m and xmlns:w already, so dropping them here is safe.
+  const stripped = omath.replace(/^<m:oMath\s[^>]*>/, '<m:oMath>')
   try {
-    const mathml = katex.renderToString(tex, {
-      output: 'mathml',
-      throwOnError: true,
-      displayMode: display,
-      strict: 'ignore',
-    })
-    // katex wraps output in <span class="katex"><math>...</math></span>.
-    // Extract the inner <math> element — mathml2omml expects a pure MathML root.
-    const inner = mathml.match(/<math[\s\S]*?<\/math>/)?.[0]
-    if (!inner) return null
-    return mathml2omml(inner)
+    return ImportedXmlComponent.fromXmlString(stripped)
   } catch {
     return null
   }
 }
-
-async function mathRunFromLatex(
-  tex: string,
-  display: boolean,
-): Promise<ImportedXmlComponent | null> {
-  const omath = latexToOmathXml(tex, display)
-  if (!omath) return null
-  // Word expects OMath wrapped in either <m:oMath> (inline) or
-  // <m:oMathPara> (display). mathml2omml output starts with one of these
-  // by default; if it doesn't, wrap it ourselves.
-  const wrapped = /^<m:oMath/.test(omath)
-    ? omath
-    : `<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">${omath}</m:oMath>`
-  return ImportedXmlComponent.fromXmlString(wrapped)
-}
 ```
 
-**Update `inlineRuns`:**
+Build a real DOCX with this change, unzip + grep `<undefined`. If zero hits → Word should open it. Smoke-test: build the docx, open in `soffice --headless --convert-to pdf` or just inspect document.xml structure. If still `<undefined>` present → go to Attempt 2.
+
+**Attempt 2 — post-process the docx buffer.** docx-lib's `Packer.toBuffer(doc)` returns a zip buffer. Unzip in-memory, strip the `<undefined>` and `</undefined>` tags from `word/document.xml`, rezip:
 
 ```ts
-async function inlineRuns(source: string | null | undefined): Promise<ParagraphChild[]> {
-  if (!source) return []
-  const segments = splitBody(source)
-  if (segments.every((s) => s.kind === 'prose')) {
-    return [new TextRun(source)]
-  }
-  const runs: ParagraphChild[] = []
-  for (const seg of segments) {
-    if (seg.kind === 'prose') {
-      if (seg.text.length > 0) runs.push(new TextRun(seg.text))
-    } else if (seg.kind === 'inline-math' || seg.kind === 'display-math') {
-      const run = await mathRunFromLatex(seg.tex, seg.kind === 'display-math')
-      if (run) {
-        runs.push(run)
-      } else {
-        // Fallback: raw LaTeX in delimiters so the math is at least readable
-        const fallback =
-          seg.kind === 'inline-math' ? `\\(${seg.tex}\\)` : `\\[${seg.tex}\\]`
-        runs.push(new TextRun(fallback))
-      }
-    }
-  }
-  return runs
+import JSZip from 'jszip'  // already a project dep
+
+export async function generateTestDOCX(testId: string): Promise<Buffer> {
+  // ... existing setup, build `doc`, then:
+  const buf = await Packer.toBuffer(doc)
+  // docx-lib v9.6 ImportedXmlComponent emits invalid <undefined> wrapping
+  // around imported OMath — post-process the zip to strip those tags.
+  const zip = await JSZip.loadAsync(buf)
+  const docXml = await zip.file('word/document.xml')!.async('string')
+  const cleaned = docXml.replace(/<\/?undefined>/g, '')
+  zip.file('word/document.xml', cleaned)
+  return Buffer.from(await zip.generateAsync({ type: 'nodebuffer' }))
 }
 ```
 
-**Remove `mathjax-full` from `package.json`** — no longer needed. Lockfile regen via `npm install`.
+This is a workaround but a definite fix. Use ONLY if Attempt 1 doesn't work.
 
-**Sharp** stays in the file (still used by `imageParagraph` for question-body diagram images).
+**Attempt 3 — last resort: subclass XmlComponent.** Define a custom `OmathComponent extends XmlComponent` with hardcoded `rootKey: 'm:oMath'` and `prepForXml` that returns the children directly. More involved. Only if Attempts 1 + 2 both fail.
 
-### Track B validation
+### Track A validation
 
-- [ ] `npm install mathml2omml@^X` clean (use actual latest version BE confirms via `npm view`).
-- [ ] `npm uninstall mathjax-full` clean. `ls node_modules/mathjax-full` → not present.
-- [ ] `npx tsc --noEmit` exits 0.
-- [ ] Unit smoke (similar to last sprint): generate a small DOCX with 3 math expressions (`\frac{1}{2}` inline, `\vec a \cdot \vec b` inline, the quadratic formula in display mode). Use python zipfile to verify:
-  - `word/document.xml` contains `<m:oMath>` elements (NOT `<w:drawing>`).
-  - `word/media/` is **empty** (or only contains diagram images, not math).
-  - `[Content_Types].xml` declares the math namespace.
-- [ ] Open the produced DOCX in any viewer that supports OMath (Word, LibreOffice). Math should render as actual scalable equations matching line height.
-
-If the `ImportedXmlComponent.fromXmlString` approach doesn't produce a valid DOCX (Word complains on open), there's a fallback: pass the raw XML via `Document`'s `customXmlString` or wrap as a different docx-lib primitive. **Do not improvise — write a status entry detailing what failed and stop.**
+- [ ] Build a real DOCX containing math expressions (`\frac{1}{2}`, `\vec a \cdot \vec b`, quadratic formula display).
+- [ ] `python3 -c "import zipfile; z=zipfile.ZipFile('/tmp/x.docx'); xml=z.read('word/document.xml').decode(); print('undefined count:', xml.count('undefined'))"` → must return **0** (or, if Attempts 1/2 leave the literal text "undefined" in normal content, the count of `<undefined` substrings specifically must be 0).
+- [ ] `npx tsc --noEmit` exit 0.
+- [ ] Document in your status entry which Attempt succeeded.
 
 ---
 
-## Workflow (both tracks, one branch)
+## Track B — PDF: serve the brand logo via public URL, not base64 data URL
+
+### Why the current approach is broken
+
+`lib/export/pdf.ts:84` calls `readBrandLogoDataUrl()` which `fs.readFileSync`s `public/brand/varenyam-logo-mark.png`. On Vercel, public/ files may not be in the function bundle — they're served as static assets but not necessarily available via fs from inside a function. If the read fails, the function silently falls back to `branding.logo_url` from the DB (a signed Supabase URL that may be invalid/expired). Browserless's headless browser fails to load that URL → renders the broken-image placeholder → 14×16 PDF embed.
+
+### Fix
+
+**1. Make `/brand/(.*)` publicly accessible** so Browserless can fetch the logo directly. Edit `middleware.ts` matcher:
+
+```diff
+- matcher: ['/((?!_next/static|_next/image|favicon.ico|icon.png|apple-icon.png|api/health).*)'],
++ matcher: ['/((?!_next/static|_next/image|favicon.ico|icon.png|apple-icon.png|brand/|api/health).*)'],
+```
+
+(`brand/` matches any path starting `brand/...` — covers `brand/varenyam-logo-mark.png`, `brand/varenyam-logo-full.png`, etc. Brand assets are publicly-served by design — no security concern.)
+
+**This is technically INT's lane per PROTOCOL.md.** Orchestrator OK'd you doing it inline since it's a one-character regex addition tightly coupled with this fix; flag in status if you'd prefer it separated.
+
+**2. Replace `readBrandLogoDataUrl` with `getDefaultLogoPublicUrl`** in `lib/export/pdf.ts`:
+
+```ts
+// Build an absolute public URL for the default brand logo. Browserless's
+// headless browser fetches this directly — no base64-in-JSON nonsense, no
+// fs.readFileSync that may fail on Vercel's function filesystem.
+function getDefaultLogoPublicUrl(): string | null {
+  const base = process.env.NEXT_PUBLIC_APP_URL
+  if (!base) return null
+  return `${base.replace(/\/$/, '')}/brand/varenyam-logo-mark.png`
+}
+```
+
+Replace the `readBrandLogoDataUrl()` call site in `generateTestPDF`:
+```diff
+- const defaultLogoDataUrl = readBrandLogoDataUrl() ?? undefined
++ const defaultLogoUrl = getDefaultLogoPublicUrl() ?? undefined
+```
+
+And the React prop:
+```diff
+- logoSrc: defaultLogoDataUrl,
++ logoSrc: defaultLogoUrl,
+```
+
+Delete the now-unused `readBrandLogoDataUrl` function + `cachedBrandLogo` variable + `fs`/`path` imports (only if both also unused elsewhere — verify).
+
+**3. Verify `NEXT_PUBLIC_APP_URL` is set in Vercel** (already required by other auth routes; should be `https://varenyamedtech.in` in production). If not set, the function will throw a clear "logo URL is null" — better than silent broken-image.
+
+### Track B validation
+
+- [ ] `npx tsc --noEmit` exit 0.
+- [ ] `npm run dev` (skip if port 4000 still EADDRINUSE — tsc + grep checks cover it).
+- [ ] Grep verify: `grep readFileSync lib/export/pdf.ts` → no katex match and no varenyam-logo-mark.png match (both should be gone).
+- [ ] Middleware test (after deploy by user): `curl -sI https://varenyamedtech.in/brand/varenyam-logo-mark.png` should return 200, NOT 307 to /login.
+
+---
+
+## Workflow (both tracks, one branch, two commits)
 
 1. Read `CLAUDE.md`, `.agents/PROTOCOL.md`, this brief.
-2. `git fetch origin && git checkout main && git pull && git checkout -b backend/native-math-pdf-css-and-docx-omath`
-3. **Commit 1 (Track A):** `[BE] PDF export: load KaTeX CSS from jsDelivr CDN (fixes ENOENT on Vercel where the tracer dropped node_modules/katex/dist/katex.min.css)`. **Backdate:** `GIT_AUTHOR_DATE='2026-05-30T00:30:00+05:30'` and `GIT_COMMITTER_DATE='2026-05-30T00:30:00+05:30'`.
-4. **Commit 2 (Track B):** `[BE] DOCX export: render math as native OOXML OMath instead of PNG images (drop mathjax-full, add mathml2omml; user explicitly wants editable equations not raster blocks)`. **Backdate:** `GIT_AUTHOR_DATE='2026-05-30T00:35:00+05:30'` and `GIT_COMMITTER_DATE='2026-05-30T00:35:00+05:30'`.
-5. Push: `git push -u origin backend/native-math-pdf-css-and-docx-omath`.
-6. Status entry covering both tracks. Run `~/report.sh backend "DOCX OMath + PDF KaTeX CDN PR ready"`.
+2. `git fetch origin && git checkout main && git pull && git checkout -b backend/fix-omath-wrapping-and-pdf-logo`
+3. **Commit 1 (Track A):** `[BE] DOCX export: fix <undefined> wrapping around OMath that broke Word open (strip xmlns from imported root + zip-buffer post-process fallback)`. **Backdate:** `GIT_AUTHOR_DATE='2026-05-30T02:30:00+05:30'` and `GIT_COMMITTER_DATE='2026-05-30T02:30:00+05:30'`.
+4. **Commit 2 (Track B):** `[BE] PDF export: serve brand logo via /brand public URL instead of base64 data URL (fixes 14x16 broken-image placeholder); open /brand/ in middleware matcher`. **Backdate:** `GIT_AUTHOR_DATE='2026-05-30T02:35:00+05:30'` and `GIT_COMMITTER_DATE='2026-05-30T02:35:00+05:30'`.
+5. Push: `git push -u origin backend/fix-omath-wrapping-and-pdf-logo`.
+6. Status entry covering both tracks. Run `~/report.sh backend "OMath wrapping + PDF logo fixes PR ready"`.
 7. **Stop.**
 
 ## Hard rules
 
 - One branch, two commits, one PR.
-- Track A: only `lib/export/pdf.ts` (and possibly `next.config.mjs` if you want to remove the now-irrelevant tracing entry — optional).
-- Track B: `package.json`, `package-lock.json`, `lib/export/docx.ts` only.
-- Don't touch `lib/ui/render-body-html.ts` or the splitter — that's correct.
-- Don't touch the route files.
-- **If `mathml2omml` package doesn't exist or API differs from above, STOP** — write status entry, don't pivot to a different library on your own. Orchestrator owns the library choice.
-- **If the OMath embedding produces a broken DOCX (Word can't open it), STOP** — write status entry with the exact Word error. Don't try alternative embedding methods on your own.
+- Track A: `lib/export/docx.ts` only (and possibly `package.json` if you need a dep — should not; JSZip is already in tree).
+- Track B: `lib/export/pdf.ts` + `middleware.ts`.
+- For Track A, ship the FIRST successful approach. Don't bundle all three.
+- Don't touch the route files, the OMath conversion (mathml2omml call), or `lib/export/branding.ts`.
 - No Claude attribution.
-- The user has been burned multiple times by export bugs. Apply precisely; if anything in the brief doesn't match reality, stop and ask. Don't ship a half-fix.
+- The user explicitly trusted us with the OMath ship and we broke their DOCX. Fix it properly this time. Test it actually opens (the structural well-formedness check from last sprint wasn't enough; Word has stricter validation).
+- If Attempts 1+2 both fail and Attempt 3 looks like >1 hour of work, STOP and write status — orchestrator will rescope to "drop OMath, render math as small inline PNG via a fixed-DPI MathJax SVG pipeline" as the fallback.
