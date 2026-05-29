@@ -17,7 +17,12 @@ import {
 } from './branding'
 import { TestPaperDocument } from './TestPaperDocument'
 
-const KATEX_CSS_PATH = 'node_modules/katex/dist/katex.min.css'
+// Load KaTeX CSS from jsDelivr at render time inside Browserless's browser
+// instead of reading from /var/task — Vercel's function tracer was dropping
+// the local node_modules/katex/dist/katex.min.css file (ENOENT → 500). The
+// pinned version must match the katex npm dep's major.minor so the CSS lines
+// up with the JS-rendered markup; the 0.16.x line is API-stable.
+const KATEX_CDN_URL = 'https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css'
 const BRAND_DEFAULT = '#0E6E84' // primary teal
 const BRAND_LEGACY = '1B3A6B'
 
@@ -109,10 +114,6 @@ export async function generateTestPDF(testId: string): Promise<Buffer> {
     )
   }
 
-  // KaTeX stylesheet injected into the page so math renders with the right
-  // fonts/spacing (the HTML references katex markup but ships no <style>).
-  const katexCss = fs.readFileSync(path.join(process.cwd(), KATEX_CSS_PATH), 'utf-8')
-
   const browserlessUrl = process.env.BROWSERLESS_URL ?? 'https://chrome.browserless.io'
 
   const res = await fetch(`${browserlessUrl}/pdf?token=${browserlessToken}`, {
@@ -130,7 +131,7 @@ export async function generateTestPDF(testId: string): Promise<Buffer> {
         headerTemplate: buildHeaderTemplate(),
         footerTemplate: buildFooterTemplate(brandingWithLogo),
       },
-      addStyleTag: [{ content: katexCss }],
+      addStyleTag: [{ url: KATEX_CDN_URL }],
       gotoOptions: { waitUntil: 'domcontentloaded' },
     }),
   })
