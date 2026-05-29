@@ -1,14 +1,22 @@
-// One-time bootstrap endpoint to create the first super_admin without SQL.
+// Bootstrap-and-recover endpoint for the super_admin account, without SQL.
 //
-// Auto-locks itself once any User in the DB has role 'super_admin' — so this
-// route works exactly once per database. After the first call, it returns 403
-// SETUP_ALREADY_DONE for all callers (including the same email re-trying).
+// Two modes, gated by what's in the database:
+//   1. NO super_admin exists yet (fresh install):
+//      accepts any email + password, creates/sets-password on that Supabase
+//      auth user, and promotes their Prisma row to role='super_admin'.
+//   2. A super_admin ALREADY exists:
+//      only the existing super_admin's own email is accepted. Same email +
+//      new password → password gets reset on that account. Any other email
+//      → 403 SETUP_LOCKED.
+//
+// This means the page works as a one-time bootstrap on a fresh DB, and as a
+// "I lost my super_admin password" recovery on any DB that already has one,
+// without ever letting a passer-by hijack a different account.
 //
 // Uses the Supabase service-role client to either:
 //   - set a password on an existing Supabase user (e.g. one created via the
 //     old Google OAuth flow, which had no password attached), or
 //   - create a brand new email/password user from scratch.
-// Then upserts the matching Prisma User row with role='super_admin'.
 
 import { type NextRequest } from 'next/server'
 import { z } from 'zod'
@@ -42,12 +50,20 @@ export async function POST(request: NextRequest) {
 
   const { email, password } = parsed.data
 
-  // Lock: only runs while no super_admin exists.
-  const alreadySetUp = await prisma.user.findFirst({ where: { role: 'super_admin' } })
-  if (alreadySetUp) {
+  // If a super_admin already exists, this endpoint becomes a password-reset
+  // tied to *that* email — any other email is rejected.
+  const existingSuperAdmin = await prisma.user.findFirst({
+    where: { role: 'super_admin' },
+    select: { email: true },
+  })
+  if (
+    existingSuperAdmin &&
+    existingSuperAdmin.email.toLowerCase() !== email.toLowerCase()
+  ) {
     return err(403, {
-      code: 'SETUP_ALREADY_DONE',
-      message: 'A super admin already exists. This setup page is now disabled.',
+      code: 'SETUP_LOCKED',
+      message:
+        'A super admin already exists with a different email. Use that email to reset the password, or sign in normally.',
     })
   }
 
@@ -117,6 +133,12 @@ export async function POST(request: NextRequest) {
 }
 
 export async function GET() {
-  const alreadySetUp = await prisma.user.findFirst({ where: { role: 'super_admin' } })
-  return ok({ available: !alreadySetUp })
+  const existing = await prisma.user.findFirst({
+    where: { role: 'super_admin' },
+    select: { email: true },
+  })
+  if (existing) {
+    return ok({ available: false, existingEmail: existing.email })
+  }
+  return ok({ available: true })
 }

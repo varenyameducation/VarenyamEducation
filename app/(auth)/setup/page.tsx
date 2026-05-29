@@ -37,11 +37,15 @@ const setupSchema = z
 
 type SetupValues = z.infer<typeof setupSchema>
 
-type Availability = 'loading' | 'available' | 'locked' | 'error'
+type Mode =
+  | { kind: 'loading' }
+  | { kind: 'bootstrap' }
+  | { kind: 'reset'; email: string }
+  | { kind: 'error' }
 
 export default function SetupPage() {
   const router = useRouter()
-  const [availability, setAvailability] = useState<Availability>('loading')
+  const [mode, setMode] = useState<Mode>({ kind: 'loading' })
   const [serverError, setServerError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [success, setSuccess] = useState(false)
@@ -57,13 +61,21 @@ export default function SetupPage() {
       .then((r) => r.json())
       .then((json) => {
         if (!active) return
-        if (json?.success && json.data?.available) setAvailability('available')
-        else setAvailability('locked')
+        if (json?.success && json.data?.available) {
+          setMode({ kind: 'bootstrap' })
+        } else if (json?.success && json.data?.existingEmail) {
+          const email = json.data.existingEmail as string
+          setMode({ kind: 'reset', email })
+          form.setValue('email', email)
+        } else {
+          setMode({ kind: 'error' })
+        }
       })
-      .catch(() => active && setAvailability('error'))
+      .catch(() => active && setMode({ kind: 'error' }))
     return () => {
       active = false
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function onSubmit(values: SetupValues) {
@@ -89,44 +101,43 @@ export default function SetupPage() {
     }
   }
 
+  const isReset = mode.kind === 'reset'
+
   return (
     <main className="flex min-h-screen items-center justify-center bg-muted/30 px-4 py-12">
       <Card className="w-full max-w-md">
         <CardHeader className="space-y-2 text-center">
-          <CardTitle>One-time setup</CardTitle>
+          <CardTitle>{isReset ? 'Reset super admin password' : 'One-time setup'}</CardTitle>
           <CardDescription>
-            Create the first super admin account for this Varenyam install.
+            {isReset
+              ? 'A super admin already exists. Set a new password for that account.'
+              : 'Create the first super admin account for this Varenyam install.'}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {availability === 'loading' ? (
+          {mode.kind === 'loading' ? (
             <p className="text-center text-sm text-muted-foreground">Checking…</p>
           ) : null}
 
-          {availability === 'locked' ? (
-            <Alert>
-              <AlertDescription>
-                This setup page has already been used. Sign in normally, or contact your existing
-                super admin if you need access.
-              </AlertDescription>
-            </Alert>
-          ) : null}
-
-          {availability === 'error' ? (
+          {mode.kind === 'error' ? (
             <Alert variant="destructive">
-              <AlertDescription>Could not check setup status. Refresh and try again.</AlertDescription>
-            </Alert>
-          ) : null}
-
-          {availability === 'available' && success ? (
-            <Alert>
               <AlertDescription>
-                Super admin created. Redirecting to sign in…
+                Could not check setup status. Refresh and try again.
               </AlertDescription>
             </Alert>
           ) : null}
 
-          {availability === 'available' && !success ? (
+          {success ? (
+            <Alert>
+              <AlertDescription>
+                {isReset
+                  ? 'Password updated. Redirecting to sign in…'
+                  : 'Super admin created. Redirecting to sign in…'}
+              </AlertDescription>
+            </Alert>
+          ) : null}
+
+          {(mode.kind === 'bootstrap' || mode.kind === 'reset') && !success ? (
             <>
               {serverError ? (
                 <Alert variant="destructive">
@@ -147,9 +158,16 @@ export default function SetupPage() {
                             type="email"
                             autoComplete="email"
                             placeholder="you@example.com"
+                            readOnly={isReset}
+                            className={isReset ? 'bg-muted' : undefined}
                             {...field}
                           />
                         </FormControl>
+                        {isReset ? (
+                          <p className="text-xs text-muted-foreground">
+                            Locked to the existing super admin account.
+                          </p>
+                        ) : null}
                         <FormMessage />
                       </FormItem>
                     )}
@@ -191,13 +209,21 @@ export default function SetupPage() {
                     )}
                   />
                   <Button type="submit" className="w-full" disabled={submitting}>
-                    {submitting ? 'Setting up…' : 'Create super admin'}
+                    {submitting
+                      ? isReset
+                        ? 'Updating…'
+                        : 'Setting up…'
+                      : isReset
+                        ? 'Update password'
+                        : 'Create super admin'}
                   </Button>
                 </form>
               </Form>
 
               <p className="text-center text-xs text-muted-foreground">
-                This page disables itself after the first successful setup.
+                {isReset
+                  ? 'Only the existing super admin email can be reset here.'
+                  : 'This page disables itself after the first successful setup.'}
               </p>
             </>
           ) : null}
