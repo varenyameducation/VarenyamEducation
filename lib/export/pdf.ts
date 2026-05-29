@@ -20,6 +20,13 @@ const KATEX_CSS_PATH = 'node_modules/katex/dist/katex.min.css'
 const BRAND_DEFAULT = '#0E6E84' // primary teal
 const BRAND_LEGACY = '1B3A6B'
 
+// On Vercel we use @sparticuz/chromium-min (JS-only, no bundled binary) and
+// download the full self-contained chromium tarball — libnss3.so and every
+// other shared lib baked in — into /tmp at runtime. The version in this URL
+// MUST match the installed @sparticuz/chromium-min version exactly.
+const CHROMIUM_PACK_URL =
+  'https://github.com/Sparticuz/chromium/releases/download/v131.0.1/chromium-v131.0.1-pack.x64.tar'
+
 function brandHex(branding: Branding): string {
   const raw = (branding.brand_color_hex ?? '').replace(/^#/, '')
   if (!raw || raw.toUpperCase() === BRAND_LEGACY) return BRAND_DEFAULT
@@ -103,11 +110,11 @@ export async function generateTestPDF(testId: string): Promise<Buffer> {
   const isServerless = Boolean(process.env.VERCEL) || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME)
   let launchOptions: Parameters<typeof puppeteer.launch>[0]
   if (isServerless) {
-    const chromium = (await import('@sparticuz/chromium')).default
+    const chromium = (await import('@sparticuz/chromium-min')).default
     launchOptions = {
       args: chromium.args,
       defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(),
+      executablePath: await chromium.executablePath(CHROMIUM_PACK_URL),
       headless: true,
     }
   } else {
