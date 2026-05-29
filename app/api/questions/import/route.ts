@@ -518,7 +518,7 @@ async function handleDocumentImport(
           })
           imported += 1
         }
-      })
+      }, { maxWait: 10_000, timeout: 60_000 })
     } catch (e) {
       const message = e instanceof Error ? e.message : 'unknown error'
       return err(500, {
@@ -923,7 +923,7 @@ async function handleXlsxImport(
           })
           imported += 1
         }
-      })
+      }, { maxWait: 10_000, timeout: 60_000 })
     } catch (e) {
       if (uploadedPaths.length > 0 && supabase) {
         await supabase.storage.from(STORAGE_BUCKET).remove(uploadedPaths).catch(() => {})
@@ -1207,7 +1207,7 @@ async function handleImageImport(
           })
           imported += 1
         }
-      })
+      }, { maxWait: 10_000, timeout: 60_000 })
     } catch (e) {
       return err(500, {
         code: 'BULK_INSERT_FAILED',
@@ -1428,7 +1428,7 @@ async function handlePdfVisionImport(
           })
           imported += 1
         }
-      })
+      }, { maxWait: 10_000, timeout: 60_000 })
     } catch (e) {
       return err(500, {
         code: 'BULK_INSERT_FAILED',
