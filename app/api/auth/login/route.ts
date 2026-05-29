@@ -60,6 +60,13 @@ export async function POST(request: NextRequest) {
     },
   })
 
+  if (!user.is_active) {
+    return err(403, {
+      code: 'ACCOUNT_DEACTIVATED',
+      message: 'Your account has been deactivated. Please contact an administrator.',
+    })
+  }
+
   setAuthCookies({
     sub: user.supabase_uid,
     email: user.email,
