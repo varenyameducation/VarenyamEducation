@@ -25,7 +25,7 @@ const BRAND_LEGACY = '1B3A6B'
 // other shared lib baked in — into /tmp at runtime. The version in this URL
 // MUST match the installed @sparticuz/chromium-min version exactly.
 const CHROMIUM_PACK_URL =
-  'https://github.com/Sparticuz/chromium/releases/download/v131.0.1/chromium-v131.0.1-pack.x64.tar'
+  'https://github.com/Sparticuz/chromium/releases/download/v131.0.1/chromium-v131.0.1-pack.tar'
 
 function brandHex(branding: Branding): string {
   const raw = (branding.brand_color_hex ?? '').replace(/^#/, '')
