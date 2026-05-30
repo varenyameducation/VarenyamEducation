@@ -6,6 +6,7 @@ import {
   Paragraph,
   TextRun,
   ImageRun,
+  ImportedXmlComponent,
   AlignmentType,
   BorderStyle,
   PageNumber,
@@ -17,13 +18,13 @@ import {
   type ISectionOptions,
   type ParagraphChild,
 } from 'docx'
+import katex from 'katex'
+import { mml2omml } from 'mathml2omml'
 import sharp from 'sharp'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { splitBody } from '@/lib/ui/render-body-html'
 import { getInstituteBranding, getTestWithQuestions, type Branding, type TestWithQuestions } from './branding'
-
-const PNG_PIXEL_WIDTH = 600
 
 // Brand palette — locked by orchestrator; hex values without `#` for docx.
 const BRAND_DEFAULT = '0E6E84' // primary teal
@@ -63,71 +64,52 @@ function readBrandLogoBuffer(): Buffer | null {
   }
 }
 
-// Module-scope MathJax SVG converter, initialized once and reused across
-// requests. Cold-start cost is ~200ms; warm requests pay nothing. MathJax
-// emits standalone SVG with real <path> glyphs (no <foreignObject>), which
-// libvips/sharp rasterizes cleanly — unlike the old katex+foreignObject path
-// that libvips silently rendered as a blank PNG, dropping all math.
-let cachedMathJax: { convert: (tex: string, display: boolean) => string } | null = null
-async function getMathJax() {
-  if (cachedMathJax) return cachedMathJax
-  const { mathjax } = await import('mathjax-full/js/mathjax.js')
-  const { TeX } = await import('mathjax-full/js/input/tex.js')
-  const { SVG } = await import('mathjax-full/js/output/svg.js')
-  const { liteAdaptor } = await import('mathjax-full/js/adaptors/liteAdaptor.js')
-  const { RegisterHTMLHandler } = await import('mathjax-full/js/handlers/html.js')
-  const { AllPackages } = await import('mathjax-full/js/input/tex/AllPackages.js')
-
-  const adaptor = liteAdaptor()
-  RegisterHTMLHandler(adaptor)
-  const tex = new TeX({ packages: AllPackages })
-  const svg = new SVG({ fontCache: 'none' })
-  const doc = mathjax.document('', { InputJax: tex, OutputJax: svg })
-
-  cachedMathJax = {
-    convert: (latex: string, display: boolean) => {
-      const node = doc.convert(latex, { display })
-      return adaptor.outerHTML(node)
-    },
-  }
-  return cachedMathJax
-}
-
-export async function renderLatexToPng(latex: string, display = false): Promise<Buffer> {
-  const mj = await getMathJax()
-  const svg = mj.convert(latex, display)
-  // MathJax emits <mjx-container><svg ...>...</svg></mjx-container>.
-  // Extract the inner <svg> so sharp gets a clean root.
-  const inner = svg.match(/<svg[\s\S]*<\/svg>/)?.[0] ?? svg
-  // MathJax sizes its SVG root in `ex` units, which librsvg rasterizes at a
-  // tiny default DPI (inline math comes out ~11px tall — illegible). Bump the
-  // density so glyphs render at a readable resolution; `withoutEnlargement`
-  // then only shrinks oversized display math down to the page width.
-  return sharp(Buffer.from(inner), { density: 300 })
-    .resize({ width: PNG_PIXEL_WIDTH, withoutEnlargement: true })
-    .png()
-    .toBuffer()
-}
-
-async function mathImageRun(tex: string, display = false): Promise<ParagraphChild | null> {
+// Render math as NATIVE Word equations (OOXML OMath), not raster images.
+// Pipeline: LaTeX --katex--> MathML --mathml2omml--> OMML, embedded as raw
+// XML via docx's ImportedXmlComponent. OMath scales with the font, is
+// editable in Word's equation editor, and adds no media files — unlike the
+// previous MathJax-SVG-to-PNG approach, which the user rejected for shipping
+// oversized raster blocks instead of real equations.
+//
+// Note: mathml2omml@0.5.0 (latest published) exposes a NAMED export
+// `mml2omml(mathmlString) -> ommlString`, not the default export the original
+// plan assumed; the call below uses the real API. Its output already starts
+// with <m:oMath>, so no extra wrapping is needed in practice.
+function latexToOmathXml(tex: string, display: boolean): string | null {
   try {
-    const png = await renderLatexToPng(tex, display)
-    const meta = await sharp(png).metadata()
-    return new ImageRun({
-      type: 'png',
-      data: png,
-      transformation: {
-        width: Math.min(meta.width ?? PNG_PIXEL_WIDTH, PNG_PIXEL_WIDTH),
-        height: Math.min(meta.height ?? 40, 60),
-      },
+    const mathml = katex.renderToString(tex, {
+      output: 'mathml',
+      throwOnError: true,
+      displayMode: display,
+      strict: 'ignore',
     })
+    // katex wraps output in <span class="katex"><math>...</math></span>.
+    // Extract the inner <math> element — mathml2omml expects a pure MathML root.
+    const inner = mathml.match(/<math[\s\S]*?<\/math>/)?.[0]
+    if (!inner) return null
+    return mml2omml(inner)
+  } catch {
+    return null
+  }
+}
+
+function mathRunFromLatex(tex: string, display: boolean): ImportedXmlComponent | null {
+  const omath = latexToOmathXml(tex, display)
+  if (!omath) return null
+  // Word expects OMath wrapped in <m:oMath> (mathml2omml already emits this).
+  // Guard anyway in case a future version returns a bare child element.
+  const wrapped = /^<m:oMath/.test(omath)
+    ? omath
+    : `<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">${omath}</m:oMath>`
+  try {
+    return ImportedXmlComponent.fromXmlString(wrapped)
   } catch {
     return null
   }
 }
 
 // Walk the body through the canonical splitter so `\(...\)`, `\[...\]`,
-// `$$...$$` segments each become their own rasterized math image, and prose
+// `$$...$$` segments each become their own native OMath equation, and prose
 // stays as plain text runs. The old implementation passed the entire
 // prose-with-delimiters string to katex.renderToString which exploded on the
 // `\(` token and silently fell back to a plain TextRun of the raw LaTeX.
@@ -142,10 +124,11 @@ async function inlineRuns(source: string | null | undefined): Promise<ParagraphC
     if (seg.kind === 'prose') {
       if (seg.text.length > 0) runs.push(new TextRun(seg.text))
     } else if (seg.kind === 'inline-math' || seg.kind === 'display-math') {
-      const run = await mathImageRun(seg.tex, seg.kind === 'display-math')
+      const run = mathRunFromLatex(seg.tex, seg.kind === 'display-math')
       if (run) {
         runs.push(run)
       } else {
+        // Fallback: raw LaTeX in delimiters so the math is at least readable.
         const fallback =
           seg.kind === 'inline-math' ? `\\(${seg.tex}\\)` : `\\[${seg.tex}\\]`
         runs.push(new TextRun(fallback))
