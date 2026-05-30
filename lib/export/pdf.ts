@@ -1,10 +1,11 @@
-// Note: react-dom/server, puppeteer-core, and @sparticuz/chromium are
-// dynamically imported inside generateTestPDF below — Next.js App Router
-// rejects top-level imports of react-dom/server in server modules
-// ("You're importing a component that imports react-dom/server"). Dynamic
-// import sidesteps the build-time check without changing runtime
-// behaviour, and keeps the chromium binary out of every build that
-// doesn't touch this route.
+// Note: react-dom/server is dynamically imported inside generateTestPDF
+// below — Next.js App Router rejects top-level imports of react-dom/server
+// in server modules ("You're importing a component that imports
+// react-dom/server"). Dynamic import sidesteps the build-time check without
+// changing runtime behaviour. PDF rendering itself is delegated to the
+// Browserless.io REST API (no local chromium/puppeteer), so the heavy
+// browser binary — and its missing libnss3.so on Vercel's Lambda image —
+// is out of the picture entirely.
 import * as React from 'react'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -19,13 +20,6 @@ import { TestPaperDocument } from './TestPaperDocument'
 const KATEX_CSS_PATH = 'node_modules/katex/dist/katex.min.css'
 const BRAND_DEFAULT = '#0E6E84' // primary teal
 const BRAND_LEGACY = '1B3A6B'
-
-// On Vercel we use @sparticuz/chromium-min (JS-only, no bundled binary) and
-// download the full self-contained chromium tarball — libnss3.so and every
-// other shared lib baked in — into /tmp at runtime. The version in this URL
-// MUST match the installed @sparticuz/chromium-min version exactly.
-const CHROMIUM_PACK_URL =
-  'https://github.com/Sparticuz/chromium/releases/download/v131.0.1/chromium-v131.0.1-pack.tar'
 
 function brandHex(branding: Branding): string {
   const raw = (branding.brand_color_hex ?? '').replace(/^#/, '')
@@ -90,7 +84,6 @@ export async function generateTestPDF(testId: string): Promise<Buffer> {
   const defaultLogoDataUrl = readBrandLogoDataUrl() ?? undefined
 
   const { renderToStaticMarkup } = await import('react-dom/server')
-  const puppeteer = (await import('puppeteer-core')).default
 
   const html =
     '<!doctype html>' +
@@ -102,56 +95,52 @@ export async function generateTestPDF(testId: string): Promise<Buffer> {
       }),
     )
 
-  // Pick a chromium binary. On Vercel (and any other Linux serverless
-  // host), @sparticuz/chromium ships a stripped-down Chromium tuned for
-  // function-sized bundles. Locally we expect PUPPETEER_EXECUTABLE_PATH
-  // in .env.local pointing at the system Chrome/Edge install (puppeteer-
-  // core does not download a browser of its own).
-  const isServerless = Boolean(process.env.VERCEL) || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME)
-  let launchOptions: Parameters<typeof puppeteer.launch>[0]
-  if (isServerless) {
-    const chromium = (await import('@sparticuz/chromium-min')).default
-    launchOptions = {
-      args: chromium.args,
-      defaultViewport: chromium.defaultViewport,
-      executablePath: await chromium.executablePath(CHROMIUM_PACK_URL),
-      headless: true,
-    }
-  } else {
-    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH
-    if (!executablePath) {
-      throw new Error(
-        'PUPPETEER_EXECUTABLE_PATH is not set. Point it at a local Chrome/Edge binary in .env.local (puppeteer-core does not download a browser), or run on Vercel where @sparticuz/chromium is used automatically.',
-      )
-    }
-    launchOptions = {
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-      executablePath,
-    }
+  // Render via Browserless.io's managed Puppeteer (/pdf REST endpoint).
+  // Five attempts at bundling @sparticuz/chromium into the Vercel function
+  // all died on `libnss3.so: cannot open shared object file` — Vercel's
+  // Lambda image ships neither the system libs chromium dynamically links
+  // nor a tarball that bundles them. Offloading to Browserless sidesteps the
+  // whole class of problem: we POST the HTML and get a PDF back.
+  const browserlessToken = process.env.BROWSERLESS_TOKEN
+  if (!browserlessToken) {
+    throw new Error(
+      'BROWSERLESS_TOKEN is not set. Sign up at browserless.io, copy your API token, ' +
+        'and add it to Vercel env vars (Production scope).',
+    )
   }
 
-  const browser = await puppeteer.launch(launchOptions)
-  try {
-    const page = await browser.newPage()
-    await page.setContent(html, { waitUntil: 'domcontentloaded' })
-    await page.addStyleTag({ path: KATEX_CSS_PATH })
+  // KaTeX stylesheet injected into the page so math renders with the right
+  // fonts/spacing (the HTML references katex markup but ships no <style>).
+  const katexCss = fs.readFileSync(path.join(process.cwd(), KATEX_CSS_PATH), 'utf-8')
 
-    const pdf = await page.pdf({
-      format: 'letter',
-      printBackground: true,
-      // Margins match the reference DOCX: narrow top + right, comfortable
-      // left + bottom. Width budget after margins is ~18cm on Letter.
-      margin: { top: '14mm', bottom: '18mm', left: '25mm', right: '6mm' },
-      displayHeaderFooter: true,
-      headerTemplate: buildHeaderTemplate(),
-      footerTemplate: buildFooterTemplate(brandingWithLogo),
-    })
+  const browserlessUrl = process.env.BROWSERLESS_URL ?? 'https://chrome.browserless.io'
 
-    return Buffer.from(pdf)
-  } finally {
-    await browser.close()
+  const res = await fetch(`${browserlessUrl}/pdf?token=${browserlessToken}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      html,
+      options: {
+        format: 'letter',
+        printBackground: true,
+        // Margins match the reference DOCX: narrow top + right, comfortable
+        // left + bottom. Width budget after margins is ~18cm on Letter.
+        margin: { top: '14mm', bottom: '18mm', left: '25mm', right: '6mm' },
+        displayHeaderFooter: true,
+        headerTemplate: buildHeaderTemplate(),
+        footerTemplate: buildFooterTemplate(brandingWithLogo),
+      },
+      addStyleTag: [{ content: katexCss }],
+      gotoOptions: { waitUntil: 'domcontentloaded' },
+    }),
+  })
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    throw new Error(`Browserless returned ${res.status}: ${detail.slice(0, 500)}`)
   }
+
+  return Buffer.from(await res.arrayBuffer())
 }
 
 export { buildHeaderTemplate, buildFooterTemplate }

@@ -17,7 +17,6 @@ import {
   type ISectionOptions,
   type ParagraphChild,
 } from 'docx'
-import katex from 'katex'
 import sharp from 'sharp'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -64,33 +63,55 @@ function readBrandLogoBuffer(): Buffer | null {
   }
 }
 
-export async function renderLatexToPng(latex: string): Promise<Buffer> {
-  const mathHtml = katex.renderToString(latex, {
-    output: 'mathml',
-    throwOnError: true,
-    displayMode: false,
-    strict: 'ignore',
-  })
+// Module-scope MathJax SVG converter, initialized once and reused across
+// requests. Cold-start cost is ~200ms; warm requests pay nothing. MathJax
+// emits standalone SVG with real <path> glyphs (no <foreignObject>), which
+// libvips/sharp rasterizes cleanly — unlike the old katex+foreignObject path
+// that libvips silently rendered as a blank PNG, dropping all math.
+let cachedMathJax: { convert: (tex: string, display: boolean) => string } | null = null
+async function getMathJax() {
+  if (cachedMathJax) return cachedMathJax
+  const { mathjax } = await import('mathjax-full/js/mathjax.js')
+  const { TeX } = await import('mathjax-full/js/input/tex.js')
+  const { SVG } = await import('mathjax-full/js/output/svg.js')
+  const { liteAdaptor } = await import('mathjax-full/js/adaptors/liteAdaptor.js')
+  const { RegisterHTMLHandler } = await import('mathjax-full/js/handlers/html.js')
+  const { AllPackages } = await import('mathjax-full/js/input/tex/AllPackages.js')
 
-  const svg = `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xhtml="http://www.w3.org/1999/xhtml"
-     width="${PNG_PIXEL_WIDTH}" height="80">
-  <foreignObject width="100%" height="100%">
-    <xhtml:div xmlns="http://www.w3.org/1999/xhtml" style="font-family: 'Latin Modern Math', serif; font-size: 18px;">
-      ${mathHtml}
-    </xhtml:div>
-  </foreignObject>
-</svg>`
+  const adaptor = liteAdaptor()
+  RegisterHTMLHandler(adaptor)
+  const tex = new TeX({ packages: AllPackages })
+  const svg = new SVG({ fontCache: 'none' })
+  const doc = mathjax.document('', { InputJax: tex, OutputJax: svg })
 
-  return sharp(Buffer.from(svg))
+  cachedMathJax = {
+    convert: (latex: string, display: boolean) => {
+      const node = doc.convert(latex, { display })
+      return adaptor.outerHTML(node)
+    },
+  }
+  return cachedMathJax
+}
+
+export async function renderLatexToPng(latex: string, display = false): Promise<Buffer> {
+  const mj = await getMathJax()
+  const svg = mj.convert(latex, display)
+  // MathJax emits <mjx-container><svg ...>...</svg></mjx-container>.
+  // Extract the inner <svg> so sharp gets a clean root.
+  const inner = svg.match(/<svg[\s\S]*<\/svg>/)?.[0] ?? svg
+  // MathJax sizes its SVG root in `ex` units, which librsvg rasterizes at a
+  // tiny default DPI (inline math comes out ~11px tall — illegible). Bump the
+  // density so glyphs render at a readable resolution; `withoutEnlargement`
+  // then only shrinks oversized display math down to the page width.
+  return sharp(Buffer.from(inner), { density: 300 })
     .resize({ width: PNG_PIXEL_WIDTH, withoutEnlargement: true })
     .png()
     .toBuffer()
 }
 
-async function mathImageRun(tex: string): Promise<ParagraphChild | null> {
+async function mathImageRun(tex: string, display = false): Promise<ParagraphChild | null> {
   try {
-    const png = await renderLatexToPng(tex)
+    const png = await renderLatexToPng(tex, display)
     const meta = await sharp(png).metadata()
     return new ImageRun({
       type: 'png',
@@ -121,7 +142,7 @@ async function inlineRuns(source: string | null | undefined): Promise<ParagraphC
     if (seg.kind === 'prose') {
       if (seg.text.length > 0) runs.push(new TextRun(seg.text))
     } else if (seg.kind === 'inline-math' || seg.kind === 'display-math') {
-      const run = await mathImageRun(seg.tex)
+      const run = await mathImageRun(seg.tex, seg.kind === 'display-math')
       if (run) {
         runs.push(run)
       } else {
