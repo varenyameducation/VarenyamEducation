@@ -19,7 +19,9 @@ const nextConfig = {
   //   - @napi-rs/canvas: ships per-platform `.node` binaries (Linux
   //     x64-gnu/musl, etc.) that Webpack has no loader for; the build
   //     fails with "Module parse failed: Unexpected character".
-  //   - @sparticuz/chromium / puppeteer-core: same .node-binary issue.
+  //   - puppeteer-core: same .node-binary issue. (@sparticuz/chromium-min
+  //     is pure JS — not externalised; it downloads chromium to /tmp at
+  //     runtime, so no binaries ship in the bundle.)
   // In Next 14 this key lives under `experimental` (renamed to top-level
   // `serverExternalPackages` in Next 15).
   experimental: {
@@ -27,7 +29,6 @@ const nextConfig = {
       'pdf-to-img',
       'pdfjs-dist',
       '@napi-rs/canvas',
-      '@sparticuz/chromium',
       'puppeteer-core',
     ],
     // Externalising tells Webpack "don't bundle", but Vercel's output
@@ -45,7 +46,6 @@ const nextConfig = {
         './node_modules/@napi-rs/canvas-linux-x64-musl/**/*',
       ],
       '/api/tests/[id]/export/pdf': [
-        './node_modules/@sparticuz/chromium/**/*',
         './node_modules/puppeteer-core/**/*',
       ],
     },
