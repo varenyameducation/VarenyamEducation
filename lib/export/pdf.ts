@@ -127,7 +127,7 @@ export async function generateTestPDF(testId: string): Promise<Buffer> {
   const browser = await puppeteer.launch(launchOptions)
   try {
     const page = await browser.newPage()
-    await page.setContent(html, { waitUntil: 'networkidle0' })
+    await page.setContent(html, { waitUntil: 'domcontentloaded' })
     await page.addStyleTag({ path: KATEX_CSS_PATH })
 
     const pdf = await page.pdf({
