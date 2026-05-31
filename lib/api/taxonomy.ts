@@ -63,11 +63,19 @@ export async function parseJsonBody<T>(
   }
   const parsed = schema.safeParse(body)
   if (!parsed.success) {
+    const details = parsed.error.flatten()
+    // Surface field-level rejection reasons in Vercel function logs so we
+    // can diagnose "Invalid input" reports without asking users to open
+    // the browser Network tab and screenshot the response body.
+    console.error('[parseJsonBody] VALIDATION_ERROR', {
+      fieldErrors: details.fieldErrors,
+      formErrors: details.formErrors,
+    })
     return {
       response: err(400, {
         code: 'VALIDATION_ERROR',
         message: 'Invalid input',
-        details: parsed.error.flatten(),
+        details,
       }),
     }
   }
