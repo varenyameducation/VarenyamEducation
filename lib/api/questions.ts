@@ -59,6 +59,8 @@ const baseQuestionFields = {
   explanation: z.string().trim().nullish(),
   hint: z.string().trim().nullish(),
   image_urls: z.array(z.string().url()).max(10).optional(),
+  solution_image_urls: z.array(z.string().url()).max(10).optional(),
+  explanation_image_urls: z.array(z.string().url()).max(10).optional(),
   tags: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
 }
 
@@ -133,6 +135,8 @@ const baseUpdateFields = {
   explanation: z.string().trim().nullish(),
   hint: z.string().trim().nullish(),
   image_urls: z.array(z.string().url()).max(10).optional(),
+  solution_image_urls: z.array(z.string().url()).max(10).optional(),
+  explanation_image_urls: z.array(z.string().url()).max(10).optional(),
   tags: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
   is_verified: z.boolean().optional(),
 }
