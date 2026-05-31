@@ -134,6 +134,8 @@ model Question {
   explanation      String?
   hint             String?
   image_urls       String[]
+  solution_image_urls    String[]
+  explanation_image_urls String[]
   created_by       String?   @db.Uuid
   is_verified      Boolean   @default(false)
   times_used       Int       @default(0)
