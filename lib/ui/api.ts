@@ -40,6 +40,8 @@ export interface Question {
   explanation?: string | null
   hint?: string | null
   image_urls?: string[]
+  solution_image_urls?: string[]
+  explanation_image_urls?: string[]
   tags?: string[]
   is_verified: boolean
   times_used: number

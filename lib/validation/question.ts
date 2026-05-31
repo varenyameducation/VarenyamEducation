@@ -33,6 +33,8 @@ const commonShape = {
   explanation: z.string().optional(),
   hint: z.string().optional(),
   image_urls: z.array(z.string()).optional(),
+  solution_image_urls: z.array(z.string()).optional(),
+  explanation_image_urls: z.array(z.string()).optional(),
   tags: z.array(z.string()).optional(),
 }
 
