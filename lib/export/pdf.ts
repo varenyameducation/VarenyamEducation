@@ -7,8 +7,6 @@
 // browser binary — and its missing libnss3.so on Vercel's Lambda image —
 // is out of the picture entirely.
 import * as React from 'react'
-import * as fs from 'node:fs'
-import * as path from 'node:path'
 import {
   getInstituteBranding,
   getTestWithQuestions,
@@ -59,20 +57,17 @@ function escapeHtml(input: string): string {
     .replace(/"/g, '&quot;')
 }
 
-// Read the bundled Varenyam icon-only mark off disk and base64-encode it so
-// Puppeteer can render the `<img src>` without going to the network.
-// Cached after first read for the lifetime of the process.
-let cachedBrandLogo: string | null = null
-function readBrandLogoDataUrl(): string | null {
-  if (cachedBrandLogo) return cachedBrandLogo
-  try {
-    const p = path.join(process.cwd(), 'public', 'brand', 'varenyam-logo-mark.png')
-    const buf = fs.readFileSync(p)
-    cachedBrandLogo = `data:image/png;base64,${buf.toString('base64')}`
-    return cachedBrandLogo
-  } catch {
-    return null
-  }
+// Build an absolute public URL for the default brand logo. Browserless's
+// headless browser fetches this directly over HTTP — no base64-in-JSON that
+// can be truncated through the request body, and no disk read of a public/
+// asset that isn't reliably present on Vercel's function filesystem (the old
+// approach silently fell back to a stale signed URL → Chrome's 14×16
+// broken-image placeholder). Requires NEXT_PUBLIC_APP_URL; returns null if
+// unset so the caller surfaces a clear failure instead of a broken image.
+function getDefaultLogoPublicUrl(): string | null {
+  const base = process.env.NEXT_PUBLIC_APP_URL
+  if (!base) return null
+  return `${base.replace(/\/$/, '')}/brand/varenyam-logo-mark.png`
 }
 
 export async function generateTestPDF(testId: string): Promise<Buffer> {
@@ -83,10 +78,10 @@ export async function generateTestPDF(testId: string): Promise<Buffer> {
   const signedLogo = await resolveLogoSignedUrl(branding.logo_url)
   const brandingWithLogo: Branding = { ...branding, logo_url: signedLogo }
 
-  // Default logo (Varenyam icon-only mark) → inlined for Puppeteer. PaperTemplate
-  // prefers branding.logo_url if the institute has set one; otherwise it
-  // falls back to this prop.
-  const defaultLogoDataUrl = readBrandLogoDataUrl() ?? undefined
+  // Default logo (Varenyam icon-only mark) → public URL for Browserless to
+  // fetch. PaperTemplate prefers branding.logo_url if the institute has set
+  // one; otherwise it falls back to this prop.
+  const defaultLogoUrl = getDefaultLogoPublicUrl() ?? undefined
 
   const { renderToStaticMarkup } = await import('react-dom/server')
 
@@ -96,7 +91,7 @@ export async function generateTestPDF(testId: string): Promise<Buffer> {
       React.createElement(TestPaperDocument, {
         test,
         branding: brandingWithLogo,
-        logoSrc: defaultLogoDataUrl,
+        logoSrc: defaultLogoUrl,
       }),
     )
 
