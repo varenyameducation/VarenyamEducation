@@ -319,7 +319,7 @@ export default function ImportQuestionsPage() {
                 {!file ? (
                   'Select a PDF or Word file to enable this option.'
                 ) : isPdf ? (
-                  'Renders each page through Gemini Vision so 2D math notation (fractions, integrals, exponents) comes through as proper LaTeX. ~5 seconds per page; uses Gemini free-tier quota.'
+                  'Renders each page through Gemini Vision so 2D math notation AND any embedded images come through. Without Vision, only text is extracted from PDFs — images will be missing. ~5 seconds per page; uses Gemini free-tier quota.'
                 ) : isDocx ? (
                   'Sends the document text to Gemini to reconstruct questions and convert flattened math back to proper LaTeX (works for Word files that were converted from PDFs). Also scans any pasted equation screenshots inside the file. ~15–45 seconds total.'
                 ) : (

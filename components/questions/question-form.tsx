@@ -25,6 +25,7 @@ import { LaTeXEditor } from '@/components/ui/latex-editor'
 import { Textarea } from '@/components/ui/textarea'
 import { QuestionTypeFields } from '@/components/questions/question-type-fields'
 import { ImageUploader } from '@/components/questions/image-uploader'
+import { SolutionImageUploader } from '@/components/questions/solution-image-uploader'
 import { ParseFromImage, type ParsedQuestion } from '@/components/questions/parse-from-image'
 import { TaxonomyTagPicker } from '@/components/questions/taxonomy-tag-picker'
 import { cn } from '@/lib/utils'
@@ -56,8 +57,18 @@ export function QuestionForm({
     register,
     control,
     setValue,
+    getValues,
     formState: { errors, isSubmitting },
   } = methods
+
+  const appendLatexTo = React.useCallback(
+    (field: 'solution' | 'explanation') => (latex: string) => {
+      const current = (getValues(field) ?? '') as string
+      const joined = current ? `${current} ${latex}` : latex
+      setValue(field, joined, { shouldDirty: true })
+    },
+    [getValues, setValue],
+  )
 
   const applyParsedQuestion = React.useCallback(
     (data: ParsedQuestion) => {
@@ -317,13 +328,41 @@ export function QuestionForm({
 
         {/* Optional fields */}
         <section className="grid gap-4 md:grid-cols-2">
-          <div className="space-y-2">
-            <Label htmlFor="solution">Solution (optional)</Label>
-            <Textarea id="solution" rows={4} {...register('solution')} />
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <Label htmlFor="solution">Solution (optional)</Label>
+              <Textarea id="solution" rows={4} {...register('solution')} />
+            </div>
+            <Controller
+              control={control}
+              name="solution_image_paths"
+              render={({ field }) => (
+                <SolutionImageUploader
+                  label="Solution images"
+                  value={(field.value ?? []) as string[]}
+                  onChange={field.onChange}
+                  onLatexExtracted={appendLatexTo('solution')}
+                />
+              )}
+            />
           </div>
-          <div className="space-y-2">
-            <Label htmlFor="explanation">Explanation (optional)</Label>
-            <Textarea id="explanation" rows={4} {...register('explanation')} />
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <Label htmlFor="explanation">Explanation (optional)</Label>
+              <Textarea id="explanation" rows={4} {...register('explanation')} />
+            </div>
+            <Controller
+              control={control}
+              name="explanation_image_paths"
+              render={({ field }) => (
+                <SolutionImageUploader
+                  label="Explanation images"
+                  value={(field.value ?? []) as string[]}
+                  onChange={field.onChange}
+                  onLatexExtracted={appendLatexTo('explanation')}
+                />
+              )}
+            />
           </div>
         </section>
 

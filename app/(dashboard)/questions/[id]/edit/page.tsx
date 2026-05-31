@@ -48,6 +48,8 @@ function toFormInitialValues(q: Question): Partial<QuestionFormValues> {
     solution: q.solution ?? '',
     explanation: q.explanation ?? '',
     image_paths: q.image_urls ?? [],
+    solution_image_paths: q.solution_image_urls ?? [],
+    explanation_image_paths: q.explanation_image_urls ?? [],
   }
 }
 

@@ -206,6 +206,8 @@ export const questionFormSchema = z
     solution: z.string().optional(),
     explanation: z.string().optional(),
     image_paths: z.array(z.string()),
+    solution_image_paths: z.array(z.string()),
+    explanation_image_paths: z.array(z.string()),
   })
   .superRefine((data, ctx) => {
     if (data.question_type === 'mcq' || data.question_type === 'multi_select') {
@@ -298,4 +300,6 @@ export const questionFormDefaults: Partial<QuestionFormValues> = {
   ],
   matrix_answer: {},
   image_paths: [],
+  solution_image_paths: [],
+  explanation_image_paths: [],
 }

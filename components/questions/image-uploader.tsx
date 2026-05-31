@@ -2,14 +2,12 @@
 
 import * as React from 'react'
 import { Upload, X, AlertCircle } from 'lucide-react'
-import { createSupabaseBrowserClient } from '@/lib/supabase/client'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
 
 const MAX_FILES = 5
 const MAX_BYTES = 5 * 1024 * 1024 // 5MB
-const BUCKET = 'question-images'
 const ACCEPTED = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
 
 export interface ImageUploaderProps {
@@ -55,23 +53,25 @@ export function ImageUploader({ value, onChange, questionId }: ImageUploaderProp
         }
       }
 
-      const supabase = createSupabaseBrowserClient()
       const uploaded: string[] = []
       for (const file of incoming) {
         setState({ status: 'uploading', name: file.name })
-        const ext = file.name.includes('.') ? file.name.split('.').pop() : 'bin'
-        const path = `${questionId ?? 'draft'}/${crypto.randomUUID()}.${ext}`
-        const { error } = await supabase.storage
-          .from(BUCKET)
-          .upload(path, file, { upsert: false, contentType: file.type })
-        if (error) {
+        const formData = new FormData()
+        formData.append('file', file)
+        if (questionId) formData.append('questionId', questionId)
+        const res = await fetch('/api/questions/upload-image', {
+          method: 'POST',
+          body: formData,
+        })
+        const json = await res.json().catch(() => null)
+        if (!res.ok || !json?.success) {
           setState({
             status: 'error',
-            message: `Upload failed for ${file.name}: ${error.message}`,
+            message: `Upload failed for ${file.name}: ${json?.error?.message ?? res.statusText}`,
           })
           return
         }
-        uploaded.push(path)
+        uploaded.push(json.data.path)
       }
       onChange([...value, ...uploaded])
       setState({ status: 'idle' })
