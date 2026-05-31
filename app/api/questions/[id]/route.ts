@@ -55,6 +55,10 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
   return ok(withTaxonomies(question))
 }
 
+export async function PATCH(request: NextRequest, { params }: RouteContext) {
+  return PUT(request, { params })
+}
+
 export async function PUT(request: NextRequest, { params }: RouteContext) {
   const auth = await requireAuth()
   if (isAuthFailure(auth)) return auth.response

@@ -220,13 +220,12 @@ export const questionFormSchema = z
           })
         }
       }
-      if (data.correct_option.length === 0) {
-        ctx.addIssue({
-          code: 'custom',
-          message: 'Pick at least one correct option',
-          path: ['correct_option'],
-        })
-      }
+      // correct_option is intentionally NOT required here. Teachers should
+      // be able to save partial/draft questions and come back later to set
+      // the answer — questions without a correct_option are flagged
+      // is_verified=false and surface a "Needs review · set correct answer"
+      // badge on the dashboard, which is the intended UX. Only validate
+      // the "MCQ allows only one" upper bound.
       if (data.question_type === 'mcq' && data.correct_option.length > 1) {
         ctx.addIssue({
           code: 'custom',
