@@ -14,6 +14,7 @@ import { DeleteQuestionDialog } from '@/components/questions/delete-question-dia
 import { RenderedBody } from '@/lib/ui/render-body'
 import { apiGet, type Question } from '@/lib/ui/api'
 import { formatTagLabel } from '@/lib/ui/mocks/m2m'
+import { resolveStorageUrl } from '@/lib/ui/storage-url'
 
 export default function QuestionDetailPage({ params }: { params: { id: string } }) {
   const router = useRouter()
@@ -114,6 +115,69 @@ export default function QuestionDetailPage({ params }: { params: { id: string } 
           </div>
         )}
         <RenderedBody className="prose prose-sm max-w-none" body={q.question_body} />
+
+        {q.image_urls?.length ? (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {q.image_urls.map((url) => (
+              /* eslint-disable-next-line @next/next/no-img-element */
+              <img
+                key={url}
+                src={resolveStorageUrl(url)}
+                alt="question image"
+                className="max-h-64 w-full rounded border object-contain"
+              />
+            ))}
+          </div>
+        ) : null}
+
+        {q.solution || q.solution_image_urls?.length ? (
+          <section className="space-y-2 rounded-md bg-muted/30 p-4">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Solution
+            </h2>
+            {q.solution ? (
+              <RenderedBody className="prose prose-sm max-w-none" body={q.solution} />
+            ) : null}
+            {q.solution_image_urls?.length ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                {q.solution_image_urls.map((url) => (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img
+                    key={url}
+                    src={resolveStorageUrl(url)}
+                    alt="solution image"
+                    className="max-h-64 w-full rounded border bg-card object-contain"
+                  />
+                ))}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
+        {q.explanation || q.explanation_image_urls?.length ? (
+          <section className="space-y-2 rounded-md bg-muted/30 p-4">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Explanation
+            </h2>
+            {q.explanation ? (
+              <RenderedBody className="prose prose-sm max-w-none" body={q.explanation} />
+            ) : null}
+            {q.explanation_image_urls?.length ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                {q.explanation_image_urls.map((url) => (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img
+                    key={url}
+                    src={resolveStorageUrl(url)}
+                    alt="explanation image"
+                    className="max-h-64 w-full rounded border bg-card object-contain"
+                  />
+                ))}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
+
         <Separator />
         <p className="text-xs text-muted-foreground">
           Marks: +{Number(q.marks_correct)} / −{Number(q.marks_negative)} · Created{' '}
