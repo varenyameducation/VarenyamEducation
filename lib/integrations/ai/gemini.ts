@@ -97,25 +97,43 @@ export async function geminiGenerateText(
 
   const url = `${ENDPOINT_BASE}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`
 
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  // Gemini returns HTTP 503 ("model overloaded") transiently a few times a
+  // day. Retry up to 2 times with backoff before surfacing as 502 to the
+  // caller — keeps these blips invisible to users without changing the
+  // surrounding error semantics.
+  const TRANSIENT_STATUSES = new Set([502, 503, 504])
+  const RETRY_BACKOFF_MS = [1500, 3000]
 
-  let res: Response
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    })
-  } catch (err) {
-    clearTimeout(timer)
-    if ((err as { name?: string })?.name === 'AbortError') {
-      throw new GeminiError('TIMEOUT', `Gemini request timed out after ${timeoutMs}ms`)
+  let res: Response | null = null
+  for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
+    } catch (err) {
+      clearTimeout(timer)
+      if ((err as { name?: string })?.name === 'AbortError') {
+        throw new GeminiError('TIMEOUT', `Gemini request timed out after ${timeoutMs}ms`)
+      }
+      throw new GeminiError('NETWORK', `Gemini network error: ${(err as Error).message}`)
     }
-    throw new GeminiError('NETWORK', `Gemini network error: ${(err as Error).message}`)
+    clearTimeout(timer)
+    if (!TRANSIENT_STATUSES.has(res.status)) break
+    const backoff = RETRY_BACKOFF_MS[attempt]
+    if (backoff === undefined) break // exhausted retries — fall through to error handling
+    console.error(
+      `[gemini] transient HTTP ${res.status} on attempt ${attempt + 1}, retrying in ${backoff}ms`,
+    )
+    await new Promise((resolve) => setTimeout(resolve, backoff))
   }
-  clearTimeout(timer)
+  if (!res) {
+    throw new GeminiError('NETWORK', 'Gemini request failed without a response')
+  }
 
   if (res.status === 401 || res.status === 403) {
     throw new GeminiError('AUTH_FAIL', `Gemini auth failed (HTTP ${res.status})`, res.status)

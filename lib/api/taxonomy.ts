@@ -16,6 +16,26 @@ export function isAuthFailure(result: AuthResult): result is AuthFailure {
   return 'response' in result
 }
 
+// In-process cache for the requireAuth user lookup. Keyed by supabase_uid;
+// values expire after USER_CACHE_TTL_MS. Lives per function-instance, so
+// warm functions reuse it across many requests; cold starts repopulate.
+// is_active changes propagate within USER_CACHE_TTL_MS — acceptable given
+// the alternative is a trans-pacific Prisma round trip (~1s) on every
+// authenticated request.
+const USER_CACHE_TTL_MS = 60_000
+type CachedUser = { user: User; expiresAt: number }
+const userCache = new Map<string, CachedUser>()
+
+async function getCachedUser(supabaseUid: string): Promise<User | null> {
+  const now = Date.now()
+  const cached = userCache.get(supabaseUid)
+  if (cached && cached.expiresAt > now) return cached.user
+  const user = await prisma.user.findUnique({ where: { supabase_uid: supabaseUid } })
+  if (user) userCache.set(supabaseUid, { user, expiresAt: now + USER_CACHE_TTL_MS })
+  else userCache.delete(supabaseUid)
+  return user
+}
+
 export async function requireAuth(allowedRoles?: Role[]): Promise<AuthResult> {
   const payload = getSessionFromCookies()
   if (!payload) {
@@ -31,7 +51,7 @@ export async function requireAuth(allowedRoles?: Role[]): Promise<AuthResult> {
     }
   }
 
-  const user = await prisma.user.findUnique({ where: { supabase_uid: payload.sub } })
+  const user = await getCachedUser(payload.sub)
   if (!user || !user.is_active) {
     return {
       response: err(401, { code: 'UNAUTHENTICATED', message: 'User no longer active' }),
