@@ -5,6 +5,7 @@ import { prisma } from '@/lib/db/prisma'
 import { err, ok } from '@/lib/api/response'
 import { logAudit } from '@/lib/auth/audit'
 import { isAuthFailure, isParseFailure, parseJsonBody, requireAuth } from '@/lib/api/taxonomy'
+import { startTimer } from '@/lib/api/timing'
 import {
   getClientIp,
   taxonomyRowSelect,
@@ -38,7 +39,9 @@ function tagKey(t: {
 }
 
 export async function GET(_request: NextRequest, { params }: RouteContext) {
+  const t = startTimer()
   const auth = await requireAuth()
+  t.mark('auth')
   if (isAuthFailure(auth)) return auth.response
 
   if (!idSchema.safeParse(params.id).success) {
@@ -49,9 +52,11 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
     where: { id: params.id, deleted_at: null },
     include: { question_taxonomies: { select: taxonomyRowSelect } },
   })
+  t.mark('prisma')
   if (!question) {
     return err(404, { code: 'QUESTION_NOT_FOUND', message: 'Question not found' })
   }
+  t.flush('/api/questions/[id] GET')
   return ok(withTaxonomies(question))
 }
 

@@ -10,6 +10,7 @@ import {
   parseJsonBody,
   requireAuth,
 } from '@/lib/api/taxonomy'
+import { startTimer } from '@/lib/api/timing'
 
 // TODO: replace with import once integration/taxonomy-types merges
 const STREAM_VALUES = ['JEE', 'NEET', 'School', 'Board'] as const
@@ -27,7 +28,9 @@ const listQuerySchema = z.object({
 })
 
 export async function GET(request: NextRequest) {
+  const t = startTimer()
   const auth = await requireAuth()
+  t.mark('auth')
   if (isAuthFailure(auth)) return auth.response
 
   const url = new URL(request.url)
@@ -49,7 +52,9 @@ export async function GET(request: NextRequest) {
     },
     orderBy: { name: 'asc' },
   })
+  t.mark('prisma')
 
+  t.flush('/api/taxonomy/courses GET')
   return ok(listEnvelope(courses))
 }
 

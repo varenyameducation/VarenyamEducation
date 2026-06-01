@@ -4,11 +4,14 @@ import { prisma } from '@/lib/db/prisma'
 import { ok } from '@/lib/api/response'
 import { isAuthFailure, isParseFailure, parseJsonBody, requireAuth } from '@/lib/api/taxonomy'
 import { logAudit } from '@/lib/auth/audit'
+import { startTimer } from '@/lib/api/timing'
 import { getClientIp, paginatedEnvelope } from '@/lib/api/questions'
 import { createTestSchema, listTestsQuerySchema } from '@/lib/api/tests'
 
 export async function GET(request: NextRequest) {
+  const timer = startTimer()
   const auth = await requireAuth()
+  timer.mark('auth')
   if (isAuthFailure(auth)) return auth.response
 
   const url = new URL(request.url)
@@ -44,6 +47,7 @@ export async function GET(request: NextRequest) {
       },
     }),
   ])
+  timer.mark('prisma')
 
   const items = rows.map((t) => {
     const tqs = t.test_questions ?? []
@@ -68,6 +72,8 @@ export async function GET(request: NextRequest) {
     }
   })
 
+  timer.mark('serialize')
+  timer.flush('/api/tests GET')
   return ok(paginatedEnvelope({ items, page, limit, total }))
 }
 

@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db/prisma'
 import { err, ok } from '@/lib/api/response'
 import { isAuthFailure, isParseFailure, parseJsonBody, requireAuth } from '@/lib/api/taxonomy'
 import { logAudit } from '@/lib/auth/audit'
+import { startTimer } from '@/lib/api/timing'
 import {
   createQuestionSchema,
   getClientIp,
@@ -15,7 +16,9 @@ import {
 } from '@/lib/api/questions'
 
 export async function GET(request: NextRequest) {
+  const t = startTimer()
   const auth = await requireAuth()
+  t.mark('auth')
   if (isAuthFailure(auth)) return auth.response
 
   const url = new URL(request.url)
@@ -74,9 +77,12 @@ export async function GET(request: NextRequest) {
       },
     }),
   ])
+  t.mark('prisma')
 
   const items = rows.map(withTaxonomies)
+  t.mark('serialize')
 
+  t.flush('/api/questions GET')
   return ok(paginatedEnvelope({ items, page, limit, total }))
 }
 
