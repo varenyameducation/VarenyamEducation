@@ -80,20 +80,18 @@ function BrandPanel() {
       />
 
       <div className="relative z-10 flex w-full max-w-md flex-col items-start gap-10">
-        <div className="flex items-center gap-3">
-          <span className="inline-flex h-12 w-12 items-center justify-center rounded-xl bg-white p-1.5 shadow-sm">
-            <Image
-              src="/brand/varenyam-logo-mark.png"
-              alt=""
-              width={48}
-              height={44}
-              priority
-              className="h-full w-auto object-contain"
-            />
-          </span>
+        <div className="flex flex-col gap-4">
+          <Image
+            src="/brand/varenyam-logo-mark.png"
+            alt=""
+            width={250}
+            height={230}
+            priority
+            className="h-24 w-auto object-contain"
+          />
           <div className="leading-tight">
-            <p className="text-2xl font-bold tracking-tight">Varenyam</p>
-            <p className="text-xs uppercase tracking-[0.18em] text-primary-foreground/75">
+            <p className="text-4xl font-bold tracking-tight">Varenyam</p>
+            <p className="mt-1 text-xs uppercase tracking-[0.22em] text-primary-foreground/75">
               Leading the way
             </p>
           </div>
@@ -143,20 +141,20 @@ function FormFallback() {
 
 function FormHeader() {
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
       {/* Mark sits above the headline on the form side too — reinforces the
-          brand without depending on the left panel being visible on mobile. */}
+          brand without depending on the left panel being visible on mobile.
+          Rendered directly on the page background (no chip / no card) so
+          the transparent PNG breathes naturally. */}
       <div className="flex items-center justify-center lg:justify-start">
-        <span className="inline-flex h-12 w-12 items-center justify-center rounded-xl bg-muted/40 p-1.5">
-          <Image
-            src="/brand/varenyam-logo-mark.png"
-            alt="Varenyam"
-            width={48}
-            height={44}
-            priority
-            className="h-full w-auto object-contain"
-          />
-        </span>
+        <Image
+          src="/brand/varenyam-logo-mark.png"
+          alt="Varenyam"
+          width={250}
+          height={230}
+          priority
+          className="h-16 w-auto object-contain"
+        />
       </div>
       <div className="space-y-1.5 text-center lg:text-left">
         <h2 className="text-2xl font-semibold tracking-tight">Sign in</h2>
