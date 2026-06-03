@@ -64,14 +64,19 @@ export function Sidebar({ role }: { role: JWTPayload['role'] }) {
       />
 
       <div className="relative z-10 flex h-20 items-center gap-3 border-b border-white/15 px-5">
-        <Image
-          src="/brand/varenyam-logo-mark.png"
-          alt=""
-          width={250}
-          height={230}
-          priority
-          className="h-11 w-auto object-contain"
-        />
+        {/* White pill behind the V mark — the teal portion of the logo
+            disappears against the teal sidebar otherwise. Same treatment
+            as the login brand panel for visual continuity. */}
+        <span className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-white shadow-sm ring-1 ring-black/5">
+          <Image
+            src="/brand/varenyam-logo-mark.png"
+            alt=""
+            width={250}
+            height={230}
+            priority
+            className="h-8 w-auto object-contain"
+          />
+        </span>
         <div className="leading-tight">
           <p className="text-lg font-bold tracking-tight">Varenyam</p>
           <p className="text-[10px] uppercase tracking-[0.18em] text-primary-foreground/70">

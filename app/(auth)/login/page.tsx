@@ -80,15 +80,20 @@ function BrandPanel() {
       />
 
       <div className="relative z-10 flex w-full max-w-md flex-col items-start gap-10">
-        <div className="flex flex-col gap-4">
-          <Image
-            src="/brand/varenyam-logo-mark.png"
-            alt=""
-            width={250}
-            height={230}
-            priority
-            className="h-24 w-auto object-contain"
-          />
+        <div className="flex flex-col gap-5">
+          {/* White pill behind the V mark — the teal portion of the logo
+              gets lost against the teal panel otherwise. Generous padding
+              so the mark breathes; subtle shadow grounds it. */}
+          <span className="inline-flex h-24 w-24 items-center justify-center rounded-2xl bg-white shadow-md ring-1 ring-black/5">
+            <Image
+              src="/brand/varenyam-logo-mark.png"
+              alt=""
+              width={250}
+              height={230}
+              priority
+              className="h-16 w-auto object-contain"
+            />
+          </span>
           <div className="leading-tight">
             <p className="text-4xl font-bold tracking-tight">Varenyam</p>
             <p className="mt-1 text-xs uppercase tracking-[0.22em] text-primary-foreground/75">
