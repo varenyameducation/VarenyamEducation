@@ -36,6 +36,7 @@ import { normalizeMathToLatex } from '@/lib/integrations/document/normalize-math
 import { parseQuestionsFromImage } from '@/lib/integrations/ai/parse-questions-from-image'
 import { parseQuestionsFromDocxText } from '@/lib/integrations/ai/parse-questions-from-docx-text'
 import { GeminiError } from '@/lib/integrations/ai/gemini'
+import { extractAnswerKeyFromImage } from '@/lib/integrations/ai/extract-answer-key'
 import {
   createDuplicateChecker,
   type DuplicateChecker,
@@ -1284,6 +1285,39 @@ async function handlePdfVisionImport(
     })
   }
 
+  // ── Optional answer-key extraction ──────────────────────────────────────
+  // When the user uploads an answers PDF alongside the questions PDF, render
+  // its pages and extract a question_no → correct-letter map. Failures are
+  // non-fatal: we simply proceed with correct_option: [] as before.
+  const answerKey = new Map<number, 'A' | 'B' | 'C' | 'D'>()
+  const answersFileRaw = form.get('answers_file')
+  if (answersFileRaw instanceof File && answersFileRaw.size > 0) {
+    try {
+      const answersRendered = await renderPdfPagesToPng(
+        Buffer.from(await answersFileRaw.arrayBuffer()),
+        { maxPages: 30 },
+      )
+      for (let ai = 0; ai < answersRendered.pages.length; ai++) {
+        if (ai > 0) await sleep(GEMINI_PACING_MS)
+        const pg = answersRendered.pages[ai]
+        try {
+          const partial = await extractAnswerKeyFromImage(pg.pngBuffer, 'image/png')
+          for (const [qNo, letter] of partial) {
+            if (!answerKey.has(qNo)) answerKey.set(qNo, letter)
+          }
+        } catch (e) {
+          console.warn(
+            `[import] answers PDF page ${pg.pageNumber} key extract failed: ${e instanceof Error ? e.message : 'unknown'}`,
+          )
+        }
+      }
+    } catch (e) {
+      console.warn(
+        `[import] answers PDF render failed (non-fatal): ${e instanceof Error ? e.message : 'unknown'}`,
+      )
+    }
+  }
+
   type Pending = {
     rowNumber: number
     data: Prisma.QuestionUncheckedCreateInput
@@ -1304,6 +1338,7 @@ async function handlePdfVisionImport(
   let mcqCount = 0
   let subjectiveCount = 0
   let skippedDuplicates = 0
+  let answersMatched = 0
 
   const checkDuplicate = await createDuplicateChecker(prisma, {
     course_id: defaults.course_id,
@@ -1352,6 +1387,15 @@ async function handlePdfVisionImport(
         errors.push({ row: page.pageNumber, reason: formatDuplicateReason(dup) })
         continue
       }
+      // Look up the correct answer from the optional answer key.
+      // Prefer question_no from the parsed question; fall back to null
+      // (correct_option stays [] when no answer key was supplied or no
+      // match found).
+      const qNo = q.question_no ?? null
+      const correctLetter = qNo !== null ? (answerKey.get(qNo) ?? null) : null
+      const correctOption = correctLetter ? [correctLetter] : []
+      if (correctLetter) answersMatched += 1
+
       let data: Prisma.QuestionUncheckedCreateInput
       if (q.question_type === 'mcq') {
         data = {
@@ -1366,11 +1410,10 @@ async function handlePdfVisionImport(
           option_b: q.options[1],
           option_c: q.options[2],
           option_d: q.options[3],
-          // Per Change B: bulk import never auto-marks the correct answer.
-          correct_option: [],
+          correct_option: correctOption,
           image_urls: [],
           tags: [],
-          is_verified: false,
+          is_verified: correctOption.length > 0,
         }
         mcqCount += 1
       } else {
@@ -1385,10 +1428,10 @@ async function handlePdfVisionImport(
               ? `[numerical — set answer in question bank] ${q.question_body}`
               : q.question_body,
           created_by: auth.user.id,
-          correct_option: [],
+          correct_option: correctOption,
           image_urls: [],
           tags: [],
-          is_verified: false,
+          is_verified: correctOption.length > 0,
         }
         subjectiveCount += 1
       }
@@ -1454,10 +1497,13 @@ async function handlePdfVisionImport(
       failed: errors.length,
       file_name: file.name,
       skipped_duplicates: skippedDuplicates,
+      answers_matched: answersMatched,
+      has_answer_key: answerKey.size > 0,
     },
     ip_address: getClientIp(request),
   })
 
+  const hasAnswerKey = answerKey.size > 0
   return ok({
     imported,
     mcq_count: mcqCount,
@@ -1467,8 +1513,12 @@ async function handlePdfVisionImport(
     total_tokens: totalTokens,
     errors,
     skipped_duplicates: skippedDuplicates,
-    note:
-      rendered.totalPagesInDoc > rendered.pages.length
+    answers_matched: hasAnswerKey ? answersMatched : undefined,
+    note: hasAnswerKey
+      ? answersMatched > 0
+        ? `${answersMatched} MCQ answer${answersMatched === 1 ? '' : 's'} matched from the answers PDF and saved. Unmatched questions still need manual review in the Question Bank.`
+        : 'Answers PDF was provided but no question numbers could be matched — check that question numbers in both PDFs match. Review answers manually in the Question Bank.'
+      : rendered.totalPagesInDoc > rendered.pages.length
         ? `Imported pages 1–${rendered.pages.length} of ${rendered.totalPagesInDoc}; re-upload the rest as a follow-up. MCQs imported without a correct answer marked — review each in the Question Bank.`
         : 'MCQs imported without a correct answer marked — review each question in the Question Bank to set the actual answer. is_verified = false on all imports.',
   })

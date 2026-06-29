@@ -8,6 +8,7 @@ const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 export type ParseQuestionsMime = (typeof ALLOWED_MIME_TYPES)[number]
 
 export const parsedQuestionSchema = z.object({
+  question_no: z.number().int().positive().nullable().optional().default(null),
   question_body: z.string().min(1),
   question_type: z.enum(['mcq', 'numerical', 'subjective']),
   options: z.array(z.string()).default([]),
@@ -25,6 +26,7 @@ const PROMPT = `Extract ALL exam questions visible in this image and return a si
 {
   "questions": [
     {
+      "question_no": 1,
       "question_body": "<question text with math in LaTeX>",
       "question_type": "mcq" | "numerical" | "subjective",
       "options": ["<option A LaTeX>", "<option B LaTeX>", "<option C LaTeX>", "<option D LaTeX>"],
@@ -35,6 +37,7 @@ const PROMPT = `Extract ALL exam questions visible in this image and return a si
 }
 
 Rules:
+- question_no: extract the integer number printed before the question (e.g. "1.", "Q2.", "(3)" → 3). null if no number is visible.
 - Convert ALL math notation to LaTeX. Wrap inline math in \\( ... \\) and display math in \\[ ... \\]. Keep prose as plain text.
 - Detect MCQs by the (A) (B) (C) (D) option pattern. If MCQ, populate options with exactly 4 strings (preserve A/B/C/D order). If not MCQ, set options to [].
 - question_type: 'mcq' if 4-option choice; 'numerical' if the answer is a numeric value (e.g. "find the value of x"); 'subjective' for everything else (descriptive answer).
