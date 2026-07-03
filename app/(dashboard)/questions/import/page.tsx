@@ -39,6 +39,7 @@ interface ImportResult {
   vision_text_images_attached?: number
   vision_text_error?: { code: string; message: string } | null
   skipped_duplicates?: number
+  answers_matched?: number
   errors: ImportError[]
   note?: string
   header?: { topic?: string | null; time_minutes?: number | null; total_marks?: number | null }
@@ -78,6 +79,7 @@ export default function ImportQuestionsPage() {
   const qc = useQueryClient()
   const [file, setFile] = React.useState<File | null>(null)
   const [zip, setZip] = React.useState<File | null>(null)
+  const [answersFile, setAnswersFile] = React.useState<File | null>(null)
   const [status, setStatus] = React.useState<Status>('idle')
   const [result, setResult] = React.useState<ImportResult | null>(null)
   const [errorMessage, setErrorMessage] = React.useState<string | null>(null)
@@ -89,6 +91,7 @@ export default function ImportQuestionsPage() {
   // is preserved across file changes until reset.
   const [userOverrode, setUserOverrode] = React.useState(false)
   const fileInputRef = React.useRef<HTMLInputElement | null>(null)
+  const answersFileInputRef = React.useRef<HTMLInputElement | null>(null)
 
   const [courseId, setCourseId] = React.useState('')
   const [subjectId, setSubjectId] = React.useState('')
@@ -180,6 +183,7 @@ export default function ImportQuestionsPage() {
     const fd = new FormData()
     fd.append('file', file)
     if (kind === 'xlsx' && zip) fd.append('images', zip)
+    if (isPdf && visionActive && answersFile) fd.append('answers_file', answersFile)
     if (needsDefaults) {
       fd.append('course_id', courseId)
       fd.append('chapter_id', chapterId)
@@ -207,6 +211,7 @@ export default function ImportQuestionsPage() {
   function resetForAnotherImport() {
     setFile(null)
     setZip(null)
+    setAnswersFile(null)
     setResult(null)
     setErrorMessage(null)
     setErrorsExpanded(false)
@@ -214,6 +219,7 @@ export default function ImportQuestionsPage() {
     setUserOverrode(false)
     setStatus('idle')
     if (fileInputRef.current) fileInputRef.current.value = ''
+    if (answersFileInputRef.current) answersFileInputRef.current.value = ''
   }
 
   function downloadErrorCsv() {
@@ -331,6 +337,34 @@ export default function ImportQuestionsPage() {
             </span>
           </label>
         </div>
+
+        {isPdf && visionActive && (
+          <div className="space-y-2">
+            <Label htmlFor="answers_file">
+              Answers PDF{' '}
+              <span className="font-normal text-muted-foreground">(optional)</span>
+            </Label>
+            <input
+              id="answers_file"
+              ref={answersFileInputRef}
+              type="file"
+              accept=".pdf,application/pdf"
+              onChange={(e) => setAnswersFile(e.target.files?.[0] ?? null)}
+              className="block w-full text-sm file:mr-3 file:rounded-md file:border file:border-input file:bg-background file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-foreground hover:file:bg-accent"
+            />
+            {answersFile ? (
+              <p className="text-xs text-muted-foreground">
+                {answersFile.name} · {(answersFile.size / 1024).toFixed(1)} KB — answers will be
+                matched to questions by number and saved automatically.
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Upload your answer key PDF and correct answers will be matched to each question
+                by number. Questions without a match are imported with no answer marked.
+              </p>
+            )}
+          </div>
+        )}
 
         {needsDefaults && (
           <fieldset className="space-y-4 rounded-md border bg-muted/20 p-4">
@@ -591,6 +625,14 @@ export default function ImportQuestionsPage() {
               {typeof result.total_tokens === 'number' && !isImage
                 ? ` · ~${result.total_tokens.toLocaleString()} Gemini tokens used`
                 : ''}
+            </p>
+          )}
+
+          {typeof result.answers_matched === 'number' && (
+            <p className="text-xs text-muted-foreground">
+              {result.answers_matched > 0
+                ? `${result.answers_matched} answer${result.answers_matched === 1 ? '' : 's'} matched from answers PDF and saved`
+                : 'Answers PDF provided but no question numbers matched — check that both PDFs use the same numbering'}
             </p>
           )}
 
