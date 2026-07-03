@@ -99,6 +99,20 @@ export function QuestionCard({ q, selected, onToggleSelected }: QuestionCardProp
 
       <RenderedBody className="text-sm text-foreground/90" body={q.question_body} />
 
+      {q.image_urls && q.image_urls.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {q.image_urls.map((url) => (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              key={url}
+              src={url}
+              alt="Question figure"
+              className="max-h-56 rounded border object-contain"
+            />
+          ))}
+        </div>
+      )}
+
       {isMcq && (
         <ol className="grid gap-1.5 sm:grid-cols-2 text-sm">
           {OPTION_KEYS.map((key, idx) => {
