@@ -151,6 +151,7 @@ model Question {
   @@index([subject], name: "idx_q_subject")
   @@index([question_type], name: "idx_q_type")
   @@index([difficulty], name: "idx_q_difficulty")
+  @@index([deleted_at])
   @@map("questions")
 }
 
@@ -177,6 +178,9 @@ model QuestionTaxonomy {
   @@index([topic_id])
   @@index([question_id])
   @@index([exam_type])
+  @@index([chapter_id, question_id])
+  @@index([topic_id, question_id])
+  @@index([course_id, question_id])
   @@map("question_taxonomies")
 }
 
@@ -204,6 +208,8 @@ model Test {
   creator        User?          @relation(fields: [created_by], references: [id])
   test_questions TestQuestion[]
 
+  @@index([deleted_at])
+  @@index([created_by])
   @@map("tests")
 }
 

@@ -12,6 +12,7 @@ import type { Question } from '@/lib/ui/api'
 import type { DifficultyValue } from '@/lib/validation/question'
 import { formatTagLabel } from '@/lib/ui/mocks/m2m'
 import { cn } from '@/lib/utils'
+import { resolveStorageUrl } from '@/lib/ui/storage-url'
 
 const DIFFICULTY_STYLES: Record<DifficultyValue, string> = {
   easy: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-100',
@@ -105,7 +106,7 @@ export function QuestionCard({ q, selected, onToggleSelected }: QuestionCardProp
             // eslint-disable-next-line @next/next/no-img-element
             <img
               key={url}
-              src={url}
+              src={resolveStorageUrl(url)}
               alt="Question figure"
               className="max-h-56 rounded border object-contain"
             />
