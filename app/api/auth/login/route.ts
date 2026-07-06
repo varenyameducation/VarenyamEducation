@@ -5,6 +5,7 @@ import { prisma } from '@/lib/db/prisma'
 import { setAuthCookies } from '@/lib/auth/session'
 import { logAudit } from '@/lib/auth/audit'
 import { ok, err } from '@/lib/api/response'
+import { checkLoginRateLimit } from '@/lib/auth/rate-limit'
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -32,6 +33,17 @@ export async function POST(request: NextRequest) {
 
   const { email, password } = parsed.data
 
+  // Rate-limit by IP to prevent brute-force.
+  const ip =
+    request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? '127.0.0.1'
+  const rateCheck = checkLoginRateLimit(ip)
+  if (!rateCheck.allowed) {
+    return err(429, {
+      code: 'TOO_MANY_REQUESTS',
+      message: `Too many login attempts. Try again in ${Math.ceil(rateCheck.retryAfterSecs / 60)} minute(s).`,
+    })
+  }
+
   const supabase = createSupabaseAnonServerClient()
   const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
     email,
@@ -47,17 +59,16 @@ export async function POST(request: NextRequest) {
 
   const supabaseUid = authData.user.id
 
-  const user = await prisma.user.upsert({
-    where: { supabase_uid: supabaseUid },
-    update: { last_login: new Date(), email },
-    create: {
-      supabase_uid: supabaseUid,
-      email,
-      full_name: (authData.user.user_metadata?.full_name as string) ?? email.split('@')[0],
-      role: 'teacher',
-      subject: [],
-      last_login: new Date(),
-    },
+  const user = await prisma.user.findUnique({ where: { supabase_uid: supabaseUid } })
+  if (!user) {
+    return err(403, {
+      code: 'NOT_PROVISIONED',
+      message: 'Account not set up. Contact your administrator.',
+    })
+  }
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { last_login: new Date() },
   })
 
   if (!user.is_active) {

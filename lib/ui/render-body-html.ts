@@ -39,7 +39,15 @@ export function splitBody(body: string): BodySegment[] {
     }
     const tok = m[0]
     if (tok.startsWith('[[IMG:')) {
-      segments.push({ kind: 'img', url: tok.slice(6, -2) })
+      const rawUrl = tok.slice(6, -2)
+      // Only allow Supabase storage URLs or relative paths. Drop unknown
+      // external URLs to prevent tracking pixels and open-redirect abuse.
+      const supabaseBase = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ''
+      const isAllowed =
+        (supabaseBase && rawUrl.startsWith(`${supabaseBase}/storage/`)) ||
+        /^\//.test(rawUrl) ||
+        !/^https?:\/\//i.test(rawUrl) // bare path like "draft/abc.png"
+      if (isAllowed) segments.push({ kind: 'img', url: rawUrl })
     } else if (tok.startsWith('\\[')) {
       segments.push({ kind: 'display-math', tex: tok.slice(2, -2) })
     } else if (tok.startsWith('\\(')) {

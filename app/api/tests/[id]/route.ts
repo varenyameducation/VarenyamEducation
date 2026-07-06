@@ -22,18 +22,55 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
 
   const test = await prisma.test.findFirst({
     where: { id: params.id, deleted_at: null },
-    include: {
-      course: { select: { id: true, name: true, grade: true, stream: true } },
-      test_questions: {
-        include: { question: true },
-        orderBy: { position: 'asc' },
-      },
-    },
+    select: { id: true, title: true, created_by: true },
   })
   if (!test) {
     return err(404, { code: 'TEST_NOT_FOUND', message: 'Test not found' })
   }
-  return ok(test)
+
+  const isAdmin = auth.payload.role === 'admin' || auth.payload.role === 'super_admin'
+  if (!isAdmin && test.created_by !== auth.user.id) {
+    return err(403, { code: 'FORBIDDEN', message: 'You can only view your own tests' })
+  }
+
+  const testFull = await prisma.test.findFirst({
+    where: { id: params.id, deleted_at: null },
+    include: {
+      course: { select: { id: true, name: true, grade: true, stream: true } },
+      test_questions: {
+        orderBy: { position: 'asc' },
+        select: {
+          id: true,
+          position: true,
+          section_label: true,
+          marks_override: true,
+          negative_override: true,
+          question: {
+            select: {
+              id: true,
+              question_type: true,
+              question_body: true,
+              option_a: true,
+              option_b: true,
+              option_c: true,
+              option_d: true,
+              correct_option: true,
+              marks_correct: true,
+              marks_negative: true,
+              difficulty: true,
+              subject: true,
+              image_urls: true,
+              numerical_answer: true,
+              matrix_left: true,
+              matrix_right: true,
+              matrix_answer: true,
+            },
+          },
+        },
+      },
+    },
+  })
+  return ok(testFull)
 }
 
 export async function PUT(request: NextRequest, { params }: RouteContext) {
