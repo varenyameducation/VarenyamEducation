@@ -19,6 +19,9 @@ import {
 import { Button } from '@/components/ui/button'
 import { QuestionCard } from '@/components/questions/question-card'
 import { BulkRetagModal } from '@/components/questions/bulk-retag-modal'
+import { QuestionTable } from '@/components/questions/question-table'
+import { QuestionFilterBar, DEFAULT_FILTERS } from '@/components/questions/question-filter-bar'
+import type { QuestionFilters } from '@/components/questions/question-filter-bar'
 import { apiGet, type Paginated, type Question } from '@/lib/ui/api'
 import { cn } from '@/lib/utils'
 
@@ -267,6 +270,7 @@ export default function QuestionsListPage() {
             onSelect={setSelection}
             selectedIds={selectedIds}
             onToggleSelected={toggleSelected}
+            onRefetch={() => questionsQuery.refetch()}
           />
         </section>
       </div>
@@ -283,6 +287,7 @@ function ContentPanel({
   onSelect,
   selectedIds,
   onToggleSelected,
+  onRefetch,
 }: {
   selection: Selection
   courses: CourseNode[]
@@ -292,6 +297,7 @@ function ContentPanel({
   onSelect: (s: Selection) => void
   selectedIds: Set<string>
   onToggleSelected: (id: string) => void
+  onRefetch: () => void
 }) {
   if (isLoading) {
     return (
@@ -342,6 +348,7 @@ function ContentPanel({
       onSelect={onSelect}
       selectedIds={selectedIds}
       onToggleSelected={onToggleSelected}
+      onRefetch={onRefetch}
     />
   )
 }
@@ -385,6 +392,7 @@ function FocusedTopicView({
   onSelect,
   selectedIds,
   onToggleSelected,
+  onRefetch,
 }: {
   selection: Exclude<Selection, { kind: 'all' }>
   visible: QuestionWithTaxonomy[]
@@ -393,10 +401,61 @@ function FocusedTopicView({
   onSelect: (s: Selection) => void
   selectedIds: Set<string>
   onToggleSelected: (id: string) => void
+  onRefetch: () => void
 }) {
   const course = courses.find((c) => c.id === selection.courseId)
+  const [filters, setFilters] = React.useState<QuestionFilters>(DEFAULT_FILTERS)
+  const [page, setPage] = React.useState(0)
+
+  // Reset page when filters change
+  React.useEffect(() => { setPage(0) }, [filters])
+  // Reset filters + page when taxonomy selection changes
+  React.useEffect(() => {
+    setFilters(DEFAULT_FILTERS)
+    setPage(0)
+  }, [selection])
+
+  // Apply client-side filters on top of the already-scoped `visible` array
+  const filtered = React.useMemo(() => {
+    let items = visible
+    if (filters.search) {
+      const q = filters.search.toLowerCase()
+      items = items.filter((item) => item.question_body.toLowerCase().includes(q))
+    }
+    if (filters.type !== 'all') {
+      items = items.filter((item) => item.question_type === filters.type)
+    }
+    if (filters.difficulty !== 'all') {
+      items = items.filter((item) => item.difficulty === filters.difficulty)
+    }
+    if (filters.verified === 'verified') {
+      items = items.filter((item) => item.is_verified)
+    } else if (filters.verified === 'needs_review') {
+      items = items.filter((item) => !item.is_verified)
+    }
+    return items
+  }, [visible, filters])
+
+  // Stats computed from the full `visible` array (pre-filter)
+  const stats = React.useMemo(() => {
+    const verified = visible.filter((q) => q.is_verified).length
+    const needsReview = visible.length - verified
+    const mcq = visible.filter(
+      (q) => q.question_type === 'mcq' || q.question_type === 'multi_select',
+    ).length
+    const numerical = visible.filter((q) => q.question_type === 'numerical').length
+    return { total: visible.length, verified, needsReview, mcq, numerical }
+  }, [visible])
+
+  const hasActiveFilters =
+    filters.search !== '' ||
+    filters.type !== 'all' ||
+    filters.difficulty !== 'all' ||
+    filters.verified !== 'all'
+
   return (
     <div className="rounded-md border bg-card">
+      {/* Breadcrumb header */}
       <div className="border-b bg-muted/40 px-4 py-3">
         <div className="flex flex-wrap items-center gap-1.5 text-sm">
           <button
@@ -424,11 +483,9 @@ function FocusedTopicView({
           )}
           {selection.kind === 'topic' && <CrumbTopic selection={selection} />}
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">
-          {visible.length} question{visible.length === 1 ? '' : 's'} in this slice
-        </p>
       </div>
-      <div className="space-y-3 p-4">
+
+      <div className="space-y-4 p-4">
         {visible.length === 0 ? (
           <div className="rounded-md border border-dashed bg-muted/20 p-8 text-center text-sm text-muted-foreground">
             No questions in this part of the taxonomy.{' '}
@@ -442,14 +499,49 @@ function FocusedTopicView({
             .
           </div>
         ) : (
-          visible.map((q) => (
-            <QuestionCard
-              key={q.id}
-              q={q}
-              selected={selectedIds.has(q.id)}
-              onToggleSelected={() => onToggleSelected(q.id)}
-            />
-          ))
+          <>
+            {/* Stats row */}
+            <p className="text-sm text-muted-foreground">
+              {stats.total} question{stats.total === 1 ? '' : 's'}
+              {' · '}
+              <span className="text-emerald-700">{stats.verified} verified</span>
+              {' · '}
+              <span className="text-amber-600">{stats.needsReview} needs review</span>
+              {' · '}
+              {stats.mcq} MCQ
+              {stats.numerical > 0 && ` · ${stats.numerical} Numerical`}
+            </p>
+
+            {/* Filter bar */}
+            <QuestionFilterBar filters={filters} onChange={setFilters} />
+
+            {/* Table or empty-filter state */}
+            {filtered.length === 0 && hasActiveFilters ? (
+              <div className="flex flex-col items-center justify-center rounded-md border border-dashed bg-muted/20 px-6 py-10 text-center">
+                <p className="text-sm text-muted-foreground">
+                  No questions match your filters
+                </p>
+                <Button
+                  type="button"
+                  variant="link"
+                  size="sm"
+                  className="mt-1 text-xs"
+                  onClick={() => setFilters(DEFAULT_FILTERS)}
+                >
+                  Clear filters
+                </Button>
+              </div>
+            ) : (
+              <QuestionTable
+                questions={filtered}
+                selectedIds={selectedIds}
+                onToggleSelected={onToggleSelected}
+                onDeleted={onRefetch}
+                page={page}
+                onPageChange={setPage}
+              />
+            )}
+          </>
         )}
       </div>
     </div>
