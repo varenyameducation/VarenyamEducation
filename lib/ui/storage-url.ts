@@ -12,9 +12,31 @@
 
 const PUBLIC_STORAGE_PREFIX = '/storage/v1/object/public/question-images/'
 
+function getSupabaseHost(): string | null {
+  try {
+    const raw = process.env.NEXT_PUBLIC_SUPABASE_URL
+    if (!raw) return null
+    return new URL(raw).hostname
+  } catch {
+    return null
+  }
+}
+
 export function resolveStorageUrl(pathOrUrl: string): string {
   if (!pathOrUrl) return ''
-  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl
+  if (/^https?:\/\//i.test(pathOrUrl)) {
+    // Only pass through URLs that are already on the Supabase storage host.
+    // External URLs (e.g. injected via [[IMG:...]] in question bodies) are
+    // silently dropped to prevent SSRF / mixed-content from untrusted origins.
+    try {
+      const supabaseHost = getSupabaseHost()
+      const urlHost = new URL(pathOrUrl).hostname
+      if (!supabaseHost || urlHost !== supabaseHost) return ''
+    } catch {
+      return ''
+    }
+    return pathOrUrl
+  }
   const base = process.env.NEXT_PUBLIC_SUPABASE_URL
   if (!base) return pathOrUrl
   return `${base.replace(/\/$/, '')}${PUBLIC_STORAGE_PREFIX}${pathOrUrl.replace(/^\/+/, '')}`

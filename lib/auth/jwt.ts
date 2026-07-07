@@ -17,16 +17,16 @@ function getJwtSecret(): string {
 
 export function signAccessToken(payload: Omit<JWTPayload, 'iat' | 'exp'>): string {
   const expiresIn = parseInt(process.env.JWT_EXPIRES_IN ?? '86400', 10)
-  return jwt.sign(payload, getJwtSecret(), { expiresIn })
+  return jwt.sign(payload, getJwtSecret(), { algorithm: 'HS256', expiresIn })
 }
 
 export function signRefreshToken(payload: Omit<JWTPayload, 'iat' | 'exp'>): string {
   const expiresIn = parseInt(process.env.JWT_REFRESH_EXPIRES_IN ?? '604800', 10)
-  return jwt.sign(payload, getJwtSecret(), { expiresIn })
+  return jwt.sign(payload, getJwtSecret(), { algorithm: 'HS256', expiresIn })
 }
 
 export function verifyToken(token: string): JWTPayload {
-  const decoded = jwt.verify(token, getJwtSecret())
+  const decoded = jwt.verify(token, getJwtSecret(), { algorithms: ['HS256'] })
   return decoded as JWTPayload
 }
 
